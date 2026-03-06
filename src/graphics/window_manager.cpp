@@ -10,11 +10,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 namespace katux::graphics {
 
 static bool intersects(const Rect& a, const Rect& b) {
     return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+
+static bool clipRectTo(const Rect& src, const Rect& clip, Rect& out) {
+    if (!intersects(src, clip)) return false;
+    const int16_t x0 = src.x > clip.x ? src.x : clip.x;
+    const int16_t y0 = src.y > clip.y ? src.y : clip.y;
+    const int16_t x1 = (src.x + src.w) < (clip.x + clip.w) ? (src.x + src.w) : (clip.x + clip.w);
+    const int16_t y1 = (src.y + src.h) < (clip.y + clip.h) ? (src.y + src.h) : (clip.y + clip.h);
+    out = {x0, y0, static_cast<int16_t>(x1 - x0), static_cast<int16_t>(y1 - y0)};
+    return out.w > 0 && out.h > 0;
 }
 
 static const char* kAutoWifiSsid = "Seychelles";
@@ -39,11 +50,14 @@ static const HubEntry kHubEntries[] = {
     {"Task Mgr", WindowKind::TaskManager, 2},
     {"WiFi", WindowKind::WifiManager, 5},
     {"Browser", WindowKind::Browser, 4},
+    {"Date&Time", WindowKind::DateTime, 11},
     {"Desktop", WindowKind::DesktopConfig, 1},
     {"Alerts", WindowKind::Notifications, 0},
+    {"Reboot", WindowKind::Reboot, 1},
     {"Demo", WindowKind::Demo, 6},
     {"Pixel Snake", WindowKind::GamePixel, 8},
-    {"Orbit Pong", WindowKind::GameOrbit, 9}
+    {"Orbit Pong", WindowKind::GameOrbit, 9},
+    {"Plinko Rush", WindowKind::GamePlinko, 10}
 };
 static constexpr uint8_t kHubEntryCount = sizeof(kHubEntries) / sizeof(kHubEntries[0]);
 static constexpr uint8_t kHubCols = 3;
@@ -69,7 +83,18 @@ static const char* stripUrlScheme(const char* url) {
 }
 
 static bool isGameKind(WindowKind kind) {
-    return kind == WindowKind::GamePixel || kind == WindowKind::GameOrbit;
+    return kind == WindowKind::GamePixel || kind == WindowKind::GameOrbit || kind == WindowKind::GamePlinko;
+}
+
+static Rect notificationRectFor(const char* text, int16_t y) {
+    int16_t w = 72;
+    if (text && text[0]) {
+        w = static_cast<int16_t>(strlen(text) * 6 + 12);
+    }
+    if (w < 72) w = 72;
+    if (w > 236) w = 236;
+    const int16_t x = static_cast<int16_t>((240 - w) / 2);
+    return {x, y, w, 16};
 }
 
 static bool startsWith(const char* s, const char* prefix) {
@@ -205,13 +230,31 @@ static const WindowKind kDesktopAssignableKinds[] = {
     WindowKind::TaskManager,
     WindowKind::Browser,
     WindowKind::ImageVisualizer,
+    WindowKind::DateTime,
     WindowKind::DesktopConfig,
     WindowKind::Notifications,
+    WindowKind::Reboot,
     WindowKind::Demo,
     WindowKind::GamePixel,
-    WindowKind::GameOrbit
+    WindowKind::GameOrbit,
+    WindowKind::GamePlinko
 };
 static constexpr uint8_t kDesktopAssignableCount = sizeof(kDesktopAssignableKinds) / sizeof(kDesktopAssignableKinds[0]);
+
+static constexpr uint8_t kDesktopPresetSlotCount = 6;
+static const WindowKind kDesktopPresets[][kDesktopPresetSlotCount] = {
+    {WindowKind::AppHub, WindowKind::Settings, WindowKind::Explorer, WindowKind::Notepad, WindowKind::WifiManager, WindowKind::TaskManager},
+    {WindowKind::AppHub, WindowKind::Browser, WindowKind::Explorer, WindowKind::Notepad, WindowKind::DateTime, WindowKind::Notifications},
+    {WindowKind::AppHub, WindowKind::GamePixel, WindowKind::GameOrbit, WindowKind::GamePlinko, WindowKind::Demo, WindowKind::Reboot},
+    {WindowKind::AppHub, WindowKind::Generic, WindowKind::Generic, WindowKind::Generic, WindowKind::Generic, WindowKind::Generic}
+};
+static const char* kDesktopPresetLabels[] = {
+    "DEF",
+    "DAY",
+    "GAME",
+    "MIN"
+};
+static constexpr uint8_t kDesktopPresetCount = sizeof(kDesktopPresets) / sizeof(kDesktopPresets[0]);
 
 static const char* desktopKindLabel(WindowKind kind) {
     if (kind == WindowKind::Generic) return "None";
@@ -223,11 +266,14 @@ static const char* desktopKindLabel(WindowKind kind) {
     if (kind == WindowKind::TaskManager) return "Tasks";
     if (kind == WindowKind::Browser) return "Browser";
     if (kind == WindowKind::ImageVisualizer) return "Image viewer";
+    if (kind == WindowKind::DateTime) return "Date & Time";
     if (kind == WindowKind::DesktopConfig) return "Desktop";
     if (kind == WindowKind::Notifications) return "Alerts";
+    if (kind == WindowKind::Reboot) return "Reboot";
     if (kind == WindowKind::Demo) return "Demo";
     if (kind == WindowKind::GamePixel) return "Pixel Snake";
     if (kind == WindowKind::GameOrbit) return "Orbit Pong";
+    if (kind == WindowKind::GamePlinko) return "Plinko Rush";
     return "App";
 }
 
@@ -258,6 +304,9 @@ static void configureWindowLimits(Window& win) {
     } else if (win.kind == WindowKind::DesktopConfig) {
         win.minWidth = 186;
         win.minHeight = 104;
+    } else if (win.kind == WindowKind::DateTime) {
+        win.minWidth = 186;
+        win.minHeight = 112;
     } else if (isGameKind(win.kind)) {
         win.minWidth = 240;
         win.maxWidth = 240;
@@ -279,21 +328,27 @@ void WindowManager::begin(katux::core::EventManager* events) {
     dirtyCount_ = 0;
 
     explorerCount_ = 0;
-    explorerFolder_ = 0;
+    explorerScroll_ = 0;
     explorerSelected_ = -1;
+    explorerSelectedCount_ = 0;
     trashAnimUntilMs_ = 0;
+    explorerDeleteConfirmUntilMs_ = 0;
+    explorerMultiSelect_ = false;
+    strlcpy(explorerPath_, "/", sizeof(explorerPath_));
+    explorerClipboardCount_ = 0;
+    explorerClipboardCut_ = false;
+    explorerMoveSource_[0] = '\0';
+    explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+    explorerKeyboardOpen_ = false;
 
     notepadText_[0] = '\0';
+    strlcpy(notepadPath_, "/notes.txt", sizeof(notepadPath_));
+    notepadBinary_ = false;
     notepadKeyboardOpen_ = false;
     notepadDirty_ = false;
     notepadToastUntilMs_ = 0;
 
-    File note = SPIFFS.open("/notes.txt", FILE_READ);
-    if (note) {
-        const size_t read = note.readBytes(notepadText_, sizeof(notepadText_) - 1);
-        notepadText_[read] = '\0';
-        note.close();
-    }
+    explorerReadTextFile(notepadPath_, notepadText_, sizeof(notepadText_));
 
     refreshExplorerEntries();
 
@@ -334,7 +389,12 @@ void WindowManager::begin(katux::core::EventManager* events) {
     }
     appHubSelected_ = 0;
     appHubPage_ = 0;
+    appHubSearchKeyboardOpen_ = false;
+    globalSearchQuery_[0] = '\0';
+    globalSearchCount_ = 0;
+    globalSearchSelected_ = 0;
     desktopShowIcons_ = true;
+    desktopConfigScroll_ = 0;
     desktopSlots_[0] = WindowKind::AppHub;
     desktopSlots_[1] = WindowKind::Settings;
     desktopSlots_[2] = WindowKind::Explorer;
@@ -362,6 +422,19 @@ void WindowManager::begin(katux::core::EventManager* events) {
     orbitScore_ = 0;
     orbitStepMs_ = millis();
     orbitOver_ = false;
+    plinkoBallX16_ = 60 * 16;
+    plinkoBallY16_ = 10 * 16;
+    plinkoBallVx16_ = 0;
+    plinkoBallVy16_ = 0;
+    plinkoScore_ = 0;
+    plinkoBestDrop_ = 0;
+    plinkoDrops_ = 0;
+    plinkoLastMult_ = 0;
+    plinkoMode_ = 0;
+    plinkoChaosWind16_ = 0;
+    plinkoStepMs_ = millis();
+    plinkoBallActive_ = false;
+    plinkoLastScored_ = false;
     browserPresetIndex_ = 0;
     browserLoading_ = false;
     browserLoaded_ = false;
@@ -495,6 +568,20 @@ int8_t WindowManager::createWindow(const char* title, int16_t x, int16_t y, int1
         orbitScore_ = 0;
         orbitStepMs_ = millis();
         orbitOver_ = false;
+    } else if (kind == WindowKind::GamePlinko) {
+        plinkoBallX16_ = 60 * 16;
+        plinkoBallY16_ = 10 * 16;
+        plinkoBallVx16_ = 0;
+        plinkoBallVy16_ = 0;
+        plinkoScore_ = 0;
+        plinkoBestDrop_ = 0;
+        plinkoDrops_ = 0;
+        plinkoLastMult_ = 0;
+        plinkoMode_ = 0;
+        plinkoChaosWind16_ = 0;
+        plinkoStepMs_ = millis();
+        plinkoBallActive_ = false;
+        plinkoLastScored_ = false;
     } else if (kind == WindowKind::Browser && !browserLoaded_ && !browserLoading_) {
         browserOpenUrl(browserUrl_, true);
     }
@@ -589,12 +676,15 @@ bool WindowManager::closeWindowById(uint8_t id) {
         markDirty({0, 111, 240, 24});
         if (w.kind == WindowKind::WifiManager) wifiKeyboardOpen_ = false;
         if (w.kind == WindowKind::Notepad) notepadKeyboardOpen_ = false;
+        if (w.kind == WindowKind::Explorer) explorerKeyboardOpen_ = false;
         if (w.kind == WindowKind::Browser) {
             browserKeyboardOpen_ = false;
             browserKeyboardEditingForm_ = false;
         }
+        if (w.kind == WindowKind::AppHub) appHubSearchKeyboardOpen_ = false;
         if (w.kind == WindowKind::ImageVisualizer) imageViewerSrcByWindow_[w.id][0] = '\0';
-        if (!wifiKeyboardOpen_ && !notepadKeyboardOpen_ && !browserKeyboardOpen_ && keyboard_.isOpen()) {
+        if (!wifiKeyboardOpen_ && !notepadKeyboardOpen_ && !browserKeyboardOpen_ && !explorerKeyboardOpen_ && !appHubSearchKeyboardOpen_ &&
+            keyboard_.isOpen()) {
             keyboard_.close();
         }
         if (draggingZ_ == z) draggingZ_ = -1;
@@ -632,8 +722,10 @@ uint8_t WindowManager::closeAllVisible() {
     hoverControl_ = 0;
     wifiKeyboardOpen_ = false;
     notepadKeyboardOpen_ = false;
+    explorerKeyboardOpen_ = false;
     browserKeyboardOpen_ = false;
     browserKeyboardEditingForm_ = false;
+    appHubSearchKeyboardOpen_ = false;
     if (keyboard_.isOpen()) keyboard_.close();
     syncFocusFlags();
     markDirty({0, 111, 240, 24});
@@ -664,8 +756,9 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             notificationSlideY_ = notificationHoldUntilMs_ > now ? 0 : -16;
         }
         if (notificationSlideY_ != prevNotifY) {
-            markDirty({0, prevNotifY, 240, 16});
-            markDirty({0, notificationSlideY_, 240, 16});
+            const char* notifText = notificationCount_ > 0 ? notifications_[notificationCount_ - 1] : "";
+            markDirty(notificationRectFor(notifText, prevNotifY));
+            markDirty(notificationRectFor(notifText, notificationSlideY_));
         }
 
         for (uint8_t i = 0; i < count_; ++i) {
@@ -697,12 +790,17 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
 
         bool pixelActive = false;
         bool orbitActive = false;
+        bool plinkoActive = false;
         for (uint8_t i = 0; i < count_; ++i) {
             const Window& w = windows_[i];
             if (!w.visible || w.minimized) continue;
             if (w.kind == WindowKind::GamePixel) pixelActive = true;
             if (w.kind == WindowKind::GameOrbit) orbitActive = true;
+            if (w.kind == WindowKind::GamePlinko) plinkoActive = true;
         }
+
+        const bool prevGameCloseHintVisible = gameCloseHintVisible_;
+        const uint16_t prevGameCloseProgressMs = gameCloseProgressMs_;
 
         if (focusedZ_ >= 0) {
             Window& focused = windows_[zOrder_[focusedZ_]];
@@ -743,6 +841,13 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             wifiSelected_ = 0;
         }
 
+        const uint8_t prevPixelX = gamePixelX_;
+        const uint8_t prevPixelY = gamePixelY_;
+        const uint8_t prevPixelFoodX = gamePixelFoodX_;
+        const uint8_t prevPixelFoodY = gamePixelFoodY_;
+        const uint16_t prevPixelScore = gamePixelScore_;
+        const bool prevPixelOver = gamePixelOver_;
+
         if (pixelActive && !gamePixelOver_ && now - gamePixelStepMs_ >= 160U) {
             gamePixelStepMs_ = now;
             const int8_t nx = static_cast<int8_t>(gamePixelX_) + gamePixelDx_;
@@ -762,6 +867,15 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 }
             }
         }
+
+        const bool pixelArenaChanged = prevPixelX != gamePixelX_ || prevPixelY != gamePixelY_ || prevPixelFoodX != gamePixelFoodX_ || prevPixelFoodY != gamePixelFoodY_;
+        const bool pixelScoreChanged = prevPixelScore != gamePixelScore_;
+        const bool pixelOverlayChanged = prevPixelOver != gamePixelOver_;
+
+        const int16_t prevOrbitBallX = orbitBallX_;
+        const int16_t prevOrbitBallY = orbitBallY_;
+        const uint16_t prevOrbitScore = orbitScore_;
+        const bool prevOrbitOver = orbitOver_;
 
         if (orbitActive && !orbitOver_ && now - orbitStepMs_ >= 42U) {
             orbitStepMs_ = now;
@@ -784,6 +898,215 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     ++orbitScore_;
                 } else {
                     orbitOver_ = true;
+                }
+            }
+        }
+
+        const bool orbitArenaChanged = prevOrbitBallX != orbitBallX_ || prevOrbitBallY != orbitBallY_;
+        const bool orbitScoreChanged = prevOrbitScore != orbitScore_;
+        const bool orbitOverlayChanged = prevOrbitOver != orbitOver_;
+
+        const bool closeUiChanged = prevGameCloseHintVisible != gameCloseHintVisible_ || prevGameCloseProgressMs != gameCloseProgressMs_;
+
+        if (closeUiChanged) {
+            markDirty({8, 4, 140, 10});
+            markDirty({8, 16, 122, 7});
+        }
+
+        if (pixelActive && (pixelArenaChanged || pixelScoreChanged || pixelOverlayChanged)) {
+            for (uint8_t i = 0; i < count_; ++i) {
+                const Window& w = windows_[i];
+                if (!w.visible || w.minimized || w.kind != WindowKind::GamePixel) continue;
+                const Rect body = windowBody(w);
+
+                const int16_t gridW = 15;
+                const int16_t gridH = 9;
+                const int16_t topPad = 20;
+                int16_t cell = static_cast<int16_t>((body.h - topPad - 10) / gridH);
+                const int16_t cellByWidth = static_cast<int16_t>((body.w - 10) / gridW);
+                if (cellByWidth < cell) cell = cellByWidth;
+                if (cell < 6) cell = 6;
+                const int16_t arenaW = static_cast<int16_t>(gridW * cell);
+                const int16_t arenaH = static_cast<int16_t>(gridH * cell);
+                const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
+
+                if (pixelArenaChanged) {
+                    markDirty(arena);
+                }
+                if (pixelScoreChanged) {
+                    markDirty({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + 6), 56, 8});
+                }
+                if (pixelOverlayChanged) {
+                    markDirty({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 24});
+                }
+            }
+        }
+
+        if (orbitActive && (orbitArenaChanged || orbitScoreChanged || orbitOverlayChanged)) {
+            for (uint8_t i = 0; i < count_; ++i) {
+                const Window& w = windows_[i];
+                if (!w.visible || w.minimized || w.kind != WindowKind::GameOrbit) continue;
+                const Rect body = windowBody(w);
+
+                const int16_t logicalW = 120;
+                const int16_t logicalH = 72;
+                const int16_t topPad = 20;
+                int16_t scale = static_cast<int16_t>((body.h - topPad - 10) / logicalH);
+                const int16_t scaleByWidth = static_cast<int16_t>((body.w - 10) / logicalW);
+                if (scaleByWidth < scale) scale = scaleByWidth;
+                if (scale < 1) scale = 1;
+                const int16_t arenaW = static_cast<int16_t>(logicalW * scale);
+                const int16_t arenaH = static_cast<int16_t>(logicalH * scale);
+                const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
+
+                if (orbitArenaChanged) {
+                    markDirty(arena);
+                }
+                if (orbitScoreChanged) {
+                    markDirty({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + 6), 56, 8});
+                }
+                if (orbitOverlayChanged) {
+                    markDirty({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 24});
+                }
+            }
+        }
+
+        const int16_t prevPlinkoX16 = plinkoBallX16_;
+        const int16_t prevPlinkoY16 = plinkoBallY16_;
+        const uint16_t prevPlinkoScore = plinkoScore_;
+        const uint16_t prevPlinkoBestDrop = plinkoBestDrop_;
+        const uint8_t prevPlinkoDrops = plinkoDrops_;
+        const uint8_t prevPlinkoLastMult = plinkoLastMult_;
+        const uint8_t prevPlinkoMode = plinkoMode_;
+        const bool prevPlinkoActive = plinkoBallActive_;
+        const bool prevPlinkoLastScored = plinkoLastScored_;
+
+        if (plinkoActive && plinkoBallActive_ && now - plinkoStepMs_ >= 16U) {
+            uint8_t steps = static_cast<uint8_t>((now - plinkoStepMs_) / 16U);
+            if (steps > 3) steps = 3;
+            plinkoStepMs_ += static_cast<uint32_t>(steps) * 16U;
+
+            const uint8_t pegRows = plinkoMode_ == 1 ? 8 : 7;
+            const int16_t gravity16 = plinkoMode_ == 1 ? 4 : 3;
+            int16_t maxVy16 = plinkoMode_ == 1 ? 56 : 44;
+            if (plinkoMode_ == 2) maxVy16 = 50;
+
+            for (uint8_t step = 0; step < steps; ++step) {
+                if (!plinkoBallActive_) break;
+
+                if (plinkoMode_ == 2) {
+                    plinkoChaosWind16_ = static_cast<int16_t>(random(-10, 11));
+                    plinkoBallVx16_ = static_cast<int16_t>(plinkoBallVx16_ + plinkoChaosWind16_ / 5);
+                }
+
+                plinkoBallVy16_ = static_cast<int16_t>(plinkoBallVy16_ + gravity16);
+                if (plinkoBallVy16_ > maxVy16) plinkoBallVy16_ = maxVy16;
+
+                plinkoBallX16_ = static_cast<int16_t>(plinkoBallX16_ + plinkoBallVx16_);
+                plinkoBallY16_ = static_cast<int16_t>(plinkoBallY16_ + plinkoBallVy16_);
+
+                if (plinkoBallX16_ < 4 * 16) {
+                    plinkoBallX16_ = 4 * 16;
+                    if (plinkoBallVx16_ < 0) {
+                        plinkoBallVx16_ = static_cast<int16_t>((-plinkoBallVx16_ * (plinkoMode_ == 2 ? 4 : 3)) / 4);
+                    }
+                } else if (plinkoBallX16_ > 116 * 16) {
+                    plinkoBallX16_ = 116 * 16;
+                    if (plinkoBallVx16_ > 0) {
+                        plinkoBallVx16_ = static_cast<int16_t>((-plinkoBallVx16_ * (plinkoMode_ == 2 ? 4 : 3)) / 4);
+                    }
+                }
+
+                for (uint8_t row = 0; row < pegRows; ++row) {
+                    const int16_t pegY = static_cast<int16_t>(10 + row * (plinkoMode_ == 1 ? 7 : 8));
+                    const int16_t shift = (row & 1U) ? 0 : 7;
+                    const uint8_t pegCols = plinkoMode_ == 1 ? 9 : 8;
+                    for (uint8_t col = 0; col < pegCols; ++col) {
+                        const int16_t pegX = static_cast<int16_t>(8 + col * (plinkoMode_ == 1 ? 12 : 14) + shift);
+                        if (pegX > 116) continue;
+                        const int16_t dx = static_cast<int16_t>(plinkoBallX16_ - pegX * 16);
+                        const int16_t dy = static_cast<int16_t>(plinkoBallY16_ - pegY * 16);
+                        if (dx > 112 || dx < -112 || dy > 112 || dy < -112) continue;
+                        const int32_t d2 = static_cast<int32_t>(dx) * dx + static_cast<int32_t>(dy) * dy;
+                        const int16_t hitR = plinkoMode_ == 1 ? 8 * 16 : 7 * 16;
+                        if (d2 < hitR * hitR) {
+                            int16_t kick = static_cast<int16_t>(2 + (row & 1U));
+                            if (plinkoMode_ == 1) kick = static_cast<int16_t>(kick + 1);
+                            if (plinkoMode_ == 2) kick = static_cast<int16_t>(kick + random(0, 3));
+                            if (dx >= 0) {
+                                plinkoBallVx16_ = static_cast<int16_t>(plinkoBallVx16_ + kick);
+                            } else {
+                                plinkoBallVx16_ = static_cast<int16_t>(plinkoBallVx16_ - kick);
+                            }
+                            if (dy > 0 && plinkoBallVy16_ > 0) {
+                                const int16_t bounceDiv = plinkoMode_ == 1 ? 2 : 3;
+                                plinkoBallVy16_ = static_cast<int16_t>(-(plinkoBallVy16_ * 2) / bounceDiv);
+                                if (plinkoBallVy16_ > -9) plinkoBallVy16_ = -9;
+                            }
+                        }
+                    }
+                }
+
+                int16_t maxVx16 = plinkoMode_ == 1 ? 32 : 26;
+                if (plinkoMode_ == 2) maxVx16 = 38;
+                if (plinkoBallVx16_ > maxVx16) plinkoBallVx16_ = maxVx16;
+                if (plinkoBallVx16_ < -maxVx16) plinkoBallVx16_ = static_cast<int16_t>(-maxVx16);
+
+                if (plinkoBallY16_ >= 70 * 16) {
+                    uint8_t bin = static_cast<uint8_t>(plinkoBallX16_ / (15 * 16));
+                    if (bin > 7) bin = 7;
+                    static const uint8_t kMultNormal[8] = {8, 4, 2, 1, 1, 2, 4, 8};
+                    static const uint8_t kMultHard[8] = {12, 6, 3, 1, 1, 3, 6, 12};
+                    static const uint8_t kMultChaos[8] = {16, 2, 10, 1, 1, 10, 2, 16};
+                    const uint8_t* multTable = kMultNormal;
+                    if (plinkoMode_ == 1) multTable = kMultHard;
+                    else if (plinkoMode_ == 2) multTable = kMultChaos;
+                    const uint16_t baseScore = plinkoMode_ == 1 ? 12U : 10U;
+                    const uint16_t dropScore = static_cast<uint16_t>(multTable[bin] * baseScore);
+                    plinkoLastMult_ = multTable[bin];
+                    plinkoScore_ = static_cast<uint16_t>(plinkoScore_ + dropScore);
+                    if (dropScore > plinkoBestDrop_) {
+                        plinkoBestDrop_ = dropScore;
+                    }
+                    plinkoBallActive_ = false;
+                    plinkoLastScored_ = true;
+                    plinkoBallVy16_ = 0;
+                    plinkoBallVx16_ = 0;
+                }
+            }
+        }
+
+        const bool plinkoArenaChanged = prevPlinkoX16 != plinkoBallX16_ || prevPlinkoY16 != plinkoBallY16_ || prevPlinkoActive != plinkoBallActive_;
+        const bool plinkoScoreChanged = prevPlinkoScore != plinkoScore_ || prevPlinkoBestDrop != plinkoBestDrop_ || prevPlinkoDrops != plinkoDrops_ || prevPlinkoMode != plinkoMode_;
+        const bool plinkoOverlayChanged = prevPlinkoLastMult != plinkoLastMult_ || prevPlinkoLastScored != plinkoLastScored_;
+
+        if (plinkoActive && (plinkoArenaChanged || plinkoScoreChanged || plinkoOverlayChanged)) {
+            for (uint8_t i = 0; i < count_; ++i) {
+                const Window& w = windows_[i];
+                if (!w.visible || w.minimized || w.kind != WindowKind::GamePlinko) continue;
+                const Rect body = windowBody(w);
+
+                const int16_t logicalW = 120;
+                const int16_t logicalH = 78;
+                const int16_t topPad = 18;
+                int16_t scale = static_cast<int16_t>((body.h - topPad - 12) / logicalH);
+                const int16_t scaleByWidth = static_cast<int16_t>((body.w - 10) / logicalW);
+                if (scaleByWidth < scale) scale = scaleByWidth;
+                if (scale < 1) scale = 1;
+                const int16_t arenaW = static_cast<int16_t>(logicalW * scale);
+                const int16_t arenaH = static_cast<int16_t>(logicalH * scale);
+                const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
+
+                if (plinkoArenaChanged) {
+                    markDirty(arena);
+                }
+                if (plinkoScoreChanged) {
+                    markDirty({static_cast<int16_t>(body.x + body.w - 66), static_cast<int16_t>(body.y + 6), 64, 8});
+                    markDirty({static_cast<int16_t>(body.x + body.w - 66), static_cast<int16_t>(body.y + 15), 64, 8});
+                    markDirty({static_cast<int16_t>(body.x + 54), static_cast<int16_t>(body.y + body.h - 14), 56, 10});
+                }
+                if (plinkoOverlayChanged) {
+                    markDirty({static_cast<int16_t>(body.x + 54), static_cast<int16_t>(body.y + 6), 60, 8});
                 }
             }
         }
@@ -829,8 +1152,8 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             const Window& wb = windows_[i];
             if (!wb.visible || wb.minimized || wb.kind != WindowKind::Browser) continue;
             const Rect body = windowBody(wb);
-            Rect dirtyRegions[3]{};
-            const uint8_t dirtyCount = browserApp_.consumeDirtyRegions(dirtyRegions, 3, body);
+            Rect dirtyRegions[6]{};
+            const uint8_t dirtyCount = browserApp_.consumeDirtyRegions(dirtyRegions, 6, body);
             for (uint8_t d = 0; d < dirtyCount; ++d) {
                 markDirty(dirtyRegions[d]);
             }
@@ -907,11 +1230,14 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             browserLoading_ = false;
             browserLoaded_ = false;
             browserSetStatus("Low RAM cache cleared");
-            if (wifiKeyboardOpen_ || notepadKeyboardOpen_ || browserKeyboardOpen_) {
+            if (wifiKeyboardOpen_ || notepadKeyboardOpen_ || explorerKeyboardOpen_ || browserKeyboardOpen_ || appHubSearchKeyboardOpen_) {
                 wifiKeyboardOpen_ = false;
                 notepadKeyboardOpen_ = false;
+                explorerKeyboardOpen_ = false;
+                explorerKeyboardMode_ = ExplorerKeyboardMode::None;
                 browserKeyboardOpen_ = false;
                 browserKeyboardEditingForm_ = false;
+                appHubSearchKeyboardOpen_ = false;
                 if (keyboard_.isOpen()) {
                     keyboard_.close();
                 }
@@ -960,6 +1286,9 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 keyboard_.close();
                 wifiKeyboardOpen_ = false;
                 notepadKeyboardOpen_ = false;
+                explorerKeyboardOpen_ = false;
+                explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                appHubSearchKeyboardOpen_ = false;
             }
             draggingZ_ = -1;
             return;
@@ -1124,6 +1453,33 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     }
                 }
             }
+        } else if (w.kind == WindowKind::DateTime) {
+            const int16_t localY = cursorY - body.y;
+            if (localY >= 20 && localY < 118) {
+                const uint8_t row = static_cast<uint8_t>((localY - 20) / 14);
+                if (row == 0) {
+                    autoTime_ = !autoTime_;
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::AutoTime), autoTime_ ? 1 : 0);
+                } else if (row == 1) {
+                    timezoneOffset_ = static_cast<int8_t>(timezoneOffset_ >= 14 ? -12 : timezoneOffset_ + 1);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::TimezoneOffset), timezoneOffset_);
+                } else if (row == 2) {
+                    manualYear_ = static_cast<uint16_t>(manualYear_ >= 2099 ? 2024 : manualYear_ + 1);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::ManualYear), manualYear_);
+                } else if (row == 3) {
+                    manualMonth_ = static_cast<uint8_t>(manualMonth_ >= 12 ? 1 : manualMonth_ + 1);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::ManualMonth), manualMonth_);
+                } else if (row == 4) {
+                    manualDay_ = static_cast<uint8_t>(manualDay_ >= 31 ? 1 : manualDay_ + 1);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::ManualDay), manualDay_);
+                } else if (row == 5) {
+                    manualHour_ = static_cast<uint8_t>((manualHour_ + 1U) % 24U);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::ManualHour), manualHour_);
+                } else if (row == 6) {
+                    manualMinute_ = static_cast<uint8_t>((manualMinute_ + 5U) % 60U);
+                    emit(katux::core::EventType::SettingChanged, static_cast<int32_t>(katux::core::SettingKey::ManualMinute), manualMinute_);
+                }
+            }
         } else if (w.kind == WindowKind::TaskManager) {
             const Rect processTab{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 16), 54, 10};
             const Rect perfTab{static_cast<int16_t>(body.x + 62), static_cast<int16_t>(body.y + 16), 54, 10};
@@ -1161,52 +1517,185 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 }
             }
         } else if (w.kind == WindowKind::Explorer) {
-            const int16_t tabY = static_cast<int16_t>(body.y + 12);
-            for (uint8_t folder = 0; folder < kFolderCount; ++folder) {
-                const Rect tab{static_cast<int16_t>(body.x + 6 + folder * 42), tabY, 38, 10};
-                if (cursorX >= tab.x && cursorY >= tab.y && cursorX < tab.x + tab.w && cursorY < tab.y + tab.h) {
-                    explorerFolder_ = folder;
-                    explorerSelected_ = -1;
-                    updateHover(cursorX, cursorY);
-                    return;
-                }
-            }
+            const Rect pathBar{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 12), static_cast<int16_t>(body.w - 12), 10};
+            const Rect upBtn{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 26), 18, 10};
+            const Rect newBtn{static_cast<int16_t>(body.x + 26), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect renBtn{static_cast<int16_t>(body.x + 52), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect delBtn{static_cast<int16_t>(body.x + 78), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect cpyBtn{static_cast<int16_t>(body.x + 104), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect movBtn{static_cast<int16_t>(body.x + 130), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect pstBtn{static_cast<int16_t>(body.x + 156), static_cast<int16_t>(body.y + 26), 24, 10};
+            const Rect refBtn{static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 26), 18, 10};
+            const Rect listRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 38), static_cast<int16_t>(body.w - 20), static_cast<int16_t>(body.h - 44)};
+            const Rect scrollUp{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + 40), 8, 10};
+            const Rect scrollDown{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + body.h - 18), 8, 10};
+            const int16_t rowH = 9;
+            int16_t visibleRows = static_cast<int16_t>(listRect.h / rowH);
+            if (visibleRows < 1) visibleRows = 1;
 
-            const Rect refreshBtn{static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + 12), 20, 10};
-            if (cursorX >= refreshBtn.x && cursorY >= refreshBtn.y && cursorX < refreshBtn.x + refreshBtn.w && cursorY < refreshBtn.y + refreshBtn.h) {
-                refreshExplorerEntries();
-                notify("Explorer refreshed");
+            if (cursorX >= pathBar.x && cursorY >= pathBar.y && cursorX < pathBar.x + pathBar.w && cursorY < pathBar.y + pathBar.h) {
+                explorerMultiSelect_ = !explorerMultiSelect_;
+                if (!explorerMultiSelect_) {
+                    if (explorerSelected_ >= 0 && explorerSelected_ < static_cast<int8_t>(explorerCount_)) {
+                        for (uint8_t i = 0; i < explorerCount_; ++i) {
+                            explorer_[i].selected = (i == static_cast<uint8_t>(explorerSelected_));
+                        }
+                        explorerSelectedCount_ = 1;
+                    } else {
+                        explorerClearSelection();
+                    }
+                }
+                notify(explorerMultiSelect_ ? "Multi-select on" : "Multi-select off");
                 updateHover(cursorX, cursorY);
                 return;
             }
 
-            const Rect trash{static_cast<int16_t>(body.x + body.w - 28), static_cast<int16_t>(body.y + body.h - 18), 20, 14};
-            if (cursorX >= trash.x && cursorY >= trash.y && cursorX < trash.x + trash.w && cursorY < trash.y + trash.h && explorerSelected_ >= 0) {
-                char path[40] = "/";
-                strlcpy(path + 1, explorer_[explorerSelected_].name, sizeof(path) - 1);
-                if (SPIFFS.exists(path) && SPIFFS.remove(path)) {
-                    trashAnimUntilMs_ = millis() + 700U;
-                    notify("File deleted");
+            if (cursorX >= upBtn.x && cursorY >= upBtn.y && cursorX < upBtn.x + upBtn.w && cursorY < upBtn.y + upBtn.h) {
+                if (strcmp(explorerPath_, "/") != 0) {
+                    char parent[96] = "";
+                    strlcpy(parent, explorerPath_, sizeof(parent));
+                    size_t n = strlen(parent);
+                    while (n > 1 && parent[n - 1] == '/') {
+                        parent[n - 1] = '\0';
+                        --n;
+                    }
+                    char* slash = strrchr(parent, '/');
+                    if (slash && slash != parent) {
+                        *slash = '\0';
+                    } else {
+                        strlcpy(parent, "/", sizeof(parent));
+                    }
+                    strlcpy(explorerPath_, parent, sizeof(explorerPath_));
+                    explorerScroll_ = 0;
+                    refreshExplorerEntries();
+                }
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= newBtn.x && cursorY >= newBtn.y && cursorX < newBtn.x + newBtn.w && cursorY < newBtn.y + newBtn.h) {
+                explorerOpenCreateDialog();
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= renBtn.x && cursorY >= renBtn.y && cursorX < renBtn.x + renBtn.w && cursorY < renBtn.y + renBtn.h) {
+                explorerOpenRenameDialog();
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= delBtn.x && cursorY >= delBtn.y && cursorX < delBtn.x + delBtn.w && cursorY < delBtn.y + delBtn.h) {
+                int16_t targets[kExplorerClipboardMax];
+                uint8_t targetCount = 0;
+                if (explorerCollectTargets(targets, kExplorerClipboardMax, targetCount)) {
+                    const uint32_t now = millis();
+                    if (explorerDeleteConfirmUntilMs_ < now) {
+                        explorerDeleteConfirmUntilMs_ = now + 1800U;
+                        notify(targetCount > 1 ? "Del again all" : "Del again");
+                    } else {
+                        bool allOk = true;
+                        for (uint8_t i = 0; i < targetCount; ++i) {
+                            const int16_t idx = targets[i];
+                            if (idx < 0 || idx >= explorerCount_) continue;
+                            if (!explorerDeletePath(explorer_[idx].path)) {
+                                allOk = false;
+                            }
+                        }
+                        explorerDeleteConfirmUntilMs_ = 0;
+                        trashAnimUntilMs_ = millis() + 700U;
+                        notify(allOk ? "Deleted" : "Delete partial");
+                        refreshExplorerEntries();
+                    }
+                }
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= cpyBtn.x && cursorY >= cpyBtn.y && cursorX < cpyBtn.x + cpyBtn.w && cursorY < cpyBtn.y + cpyBtn.h) {
+                explorerFillClipboard(false);
+                notify(explorerClipboardCount_ > 0 ? "Copied" : "No selection");
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= movBtn.x && cursorY >= movBtn.y && cursorX < movBtn.x + movBtn.w && cursorY < movBtn.y + movBtn.h) {
+                explorerFillClipboard(true);
+                if (explorerClipboardCount_ > 0) {
+                    notify("Cut");
+                    if (!explorerMultiSelect_) {
+                        explorerOpenMoveDialog();
+                    }
                 } else {
-                    notify("Delete failed");
+                    notify("No selection");
                 }
-                explorerSelected_ = -1;
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= pstBtn.x && cursorY >= pstBtn.y && cursorX < pstBtn.x + pstBtn.w && cursorY < pstBtn.y + pstBtn.h) {
+                if (explorerClipboardCount_ == 0) {
+                    notify("Clipboard empty");
+                } else {
+                    const bool cutMode = explorerClipboardCut_;
+                    if (explorerPasteClipboardTo(explorerPath_)) {
+                        notify(cutMode ? "Moved" : "Pasted");
+                    } else {
+                        notify("Paste partial");
+                    }
+                    refreshExplorerEntries();
+                }
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= refBtn.x && cursorY >= refBtn.y && cursorX < refBtn.x + refBtn.w && cursorY < refBtn.y + refBtn.h) {
                 refreshExplorerEntries();
+                notify("Refreshed");
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= scrollUp.x && cursorY >= scrollUp.y && cursorX < scrollUp.x + scrollUp.w && cursorY < scrollUp.y + scrollUp.h) {
+                if (explorerScroll_ > 0) --explorerScroll_;
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= scrollDown.x && cursorY >= scrollDown.y && cursorX < scrollDown.x + scrollDown.w && cursorY < scrollDown.y + scrollDown.h) {
+                const int16_t maxScroll = explorerCount_ > visibleRows ? static_cast<int16_t>(explorerCount_ - visibleRows) : 0;
+                if (explorerScroll_ < maxScroll) ++explorerScroll_;
                 updateHover(cursorX, cursorY);
                 return;
             }
 
-            uint8_t row = 0;
-            for (uint8_t i = 0; i < explorerCount_; ++i) {
-                if (explorer_[i].folder != explorerFolder_) continue;
-                const Rect slot{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 29 + row * 10), static_cast<int16_t>(body.w - 44), 9};
-                if (cursorX >= slot.x && cursorY >= slot.y && cursorX < slot.x + slot.w && cursorY < slot.y + slot.h) {
-                    explorerSelected_ = static_cast<int8_t>(i);
-                    updateHover(cursorX, cursorY);
-                    return;
+            if (cursorX >= listRect.x && cursorY >= listRect.y && cursorX < listRect.x + listRect.w && cursorY < listRect.y + listRect.h) {
+                const int16_t row = static_cast<int16_t>((cursorY - listRect.y) / rowH);
+                const int16_t idx = static_cast<int16_t>(explorerScroll_ + row);
+                if (idx >= 0 && idx < explorerCount_) {
+                    const uint32_t now = millis();
+                    if (explorerDeleteConfirmUntilMs_ > 0 && now > explorerDeleteConfirmUntilMs_) {
+                        explorerDeleteConfirmUntilMs_ = 0;
+                    }
+                    if (explorerMultiSelect_) {
+                        explorerToggleSelection(idx);
+                    } else if (explorerSelected_ == idx) {
+                        explorerOpenSelected();
+                    } else {
+                        explorerSelected_ = static_cast<int8_t>(idx);
+                        explorerSelectedCount_ = 1;
+                        for (uint8_t i = 0; i < explorerCount_; ++i) {
+                            explorer_[i].selected = (i == static_cast<uint8_t>(idx));
+                        }
+                    }
                 }
-                ++row;
-                if (row >= 8) break;
+                updateHover(cursorX, cursorY);
+                return;
+            }
+
+            if (explorerKeyboardOpen_) {
+                const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+                if (keyboard_.onClick(cursorX, cursorY, keyRect)) {
+                    if (keyboard_.consumeAccepted()) {
+                        explorerApplyKeyboardAccept(keyboard_.value());
+                        explorerKeyboardOpen_ = false;
+                        explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                    } else if (!keyboard_.isOpen()) {
+                        explorerKeyboardOpen_ = false;
+                        explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                    }
+                }
             }
         } else if (w.kind == WindowKind::Notepad) {
             const Rect editBtn{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 4), 32, 10};
@@ -1214,33 +1703,39 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             const Rect loadBtn{static_cast<int16_t>(body.x + 78), static_cast<int16_t>(body.y + 4), 32, 10};
 
             if (cursorX >= editBtn.x && cursorY >= editBtn.y && cursorX < editBtn.x + editBtn.w && cursorY < editBtn.y + editBtn.h) {
-                keyboard_.open(notepadText_);
-                notepadKeyboardOpen_ = true;
-                wifiKeyboardOpen_ = false;
-                browserKeyboardOpen_ = false;
-                browserKeyboardEditingForm_ = false;
+                if (notepadBinary_) {
+                    notify("Binary blocked");
+                } else {
+                    keyboard_.open(notepadText_);
+                    notepadKeyboardOpen_ = true;
+                    wifiKeyboardOpen_ = false;
+                    explorerKeyboardOpen_ = false;
+                    explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                    browserKeyboardOpen_ = false;
+                    browserKeyboardEditingForm_ = false;
+                }
             } else if (cursorX >= saveBtn.x && cursorY >= saveBtn.y && cursorX < saveBtn.x + saveBtn.w && cursorY < saveBtn.y + saveBtn.h) {
-                File note = SPIFFS.open("/notes.txt", FILE_WRITE);
-                if (note) {
-                    note.print(notepadText_);
-                    note.close();
+                if (notepadBinary_) {
+                    notify("Binary blocked");
+                } else if (explorerWriteTextFile(notepadPath_, notepadText_)) {
                     notepadDirty_ = false;
                     notepadToastUntilMs_ = millis() + 1200U;
                     refreshExplorerEntries();
-                    notify("Note saved");
+                    notify("Saved");
                 } else {
                     notify("Save failed");
                 }
             } else if (cursorX >= loadBtn.x && cursorY >= loadBtn.y && cursorX < loadBtn.x + loadBtn.w && cursorY < loadBtn.y + loadBtn.h) {
-                File note = SPIFFS.open("/notes.txt", FILE_READ);
-                if (note) {
-                    const size_t read = note.readBytes(notepadText_, sizeof(notepadText_) - 1);
-                    notepadText_[read] = '\0';
-                    note.close();
+                notepadBinary_ = explorerFileLooksBinary(notepadPath_) || !explorerIsTextLikeFile(notepadPath_);
+                if (notepadBinary_) {
+                    notepadText_[0] = '\0';
                     notepadDirty_ = false;
-                    notify("Note loaded");
+                    notify("Binary file");
+                } else if (explorerReadTextFile(notepadPath_, notepadText_, sizeof(notepadText_))) {
+                    notepadDirty_ = false;
+                    notify("Loaded");
                 } else {
-                    notify("No note file");
+                    notify("Read failed");
                 }
             }
 
@@ -1248,8 +1743,18 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
                 if (keyboard_.onClick(cursorX, cursorY, keyRect)) {
                     strlcpy(notepadText_, keyboard_.value(), sizeof(notepadText_));
-                    notepadDirty_ = true;
+                    notepadDirty_ = !notepadBinary_;
                     if (keyboard_.consumeAccepted()) {
+                        if (!notepadBinary_ && explorerWriteTextFile(notepadPath_, notepadText_)) {
+                            notepadDirty_ = false;
+                            notepadToastUntilMs_ = millis() + 1200U;
+                            refreshExplorerEntries();
+                            notify("Saved");
+                        } else if (!notepadBinary_) {
+                            notify("Save failed");
+                        }
+                        notepadKeyboardOpen_ = false;
+                    } else if (!keyboard_.isOpen()) {
                         notepadKeyboardOpen_ = false;
                     }
                 }
@@ -1265,9 +1770,54 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 return;
             }
 
-            for (uint8_t slot = 0; slot < kDesktopSlotCount; ++slot) {
-                const Rect row{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 34 + slot * 11), static_cast<int16_t>(body.w - 16), 10};
-                if (cursorX >= row.x && cursorY >= row.y && cursorX < row.x + row.w && cursorY < row.y + row.h) {
+            const Rect presetBand{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 31), static_cast<int16_t>(body.w - 16), 11};
+            if (cursorX >= presetBand.x && cursorY >= presetBand.y && cursorX < presetBand.x + presetBand.w && cursorY < presetBand.y + presetBand.h) {
+                const int16_t presetW = static_cast<int16_t>(presetBand.w / kDesktopPresetCount);
+                uint8_t idx = 0;
+                if (presetW > 0) {
+                    idx = static_cast<uint8_t>((cursorX - presetBand.x) / presetW);
+                    if (idx >= kDesktopPresetCount) idx = static_cast<uint8_t>(kDesktopPresetCount - 1U);
+                }
+                for (uint8_t i = 0; i < kDesktopSlotCount; ++i) {
+                    desktopSlots_[i] = kDesktopPresets[idx][i];
+                }
+                desktopConfigScroll_ = 0;
+                desktopSaveConfig();
+                notify(kDesktopPresetLabels[idx]);
+                markDirty({0, 0, 240, 111});
+                updateHover(cursorX, cursorY);
+                return;
+            }
+
+            const Rect listRect{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 44), static_cast<int16_t>(body.w - 22), static_cast<int16_t>(body.h - 58)};
+            const Rect scrollUp{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + 44), 8, 10};
+            const Rect scrollDown{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + body.h - 16), 8, 10};
+            int16_t visibleRows = static_cast<int16_t>(listRect.h / 10);
+            if (visibleRows < 1) visibleRows = 1;
+            if (visibleRows > static_cast<int16_t>(kDesktopSlotCount)) visibleRows = kDesktopSlotCount;
+            const uint8_t maxScroll = static_cast<uint8_t>(kDesktopSlotCount - visibleRows);
+
+            if (cursorX >= scrollUp.x && cursorY >= scrollUp.y && cursorX < scrollUp.x + scrollUp.w && cursorY < scrollUp.y + scrollUp.h) {
+                if (desktopConfigScroll_ > 0) {
+                    --desktopConfigScroll_;
+                    markDirty(body);
+                }
+                updateHover(cursorX, cursorY);
+                return;
+            }
+            if (cursorX >= scrollDown.x && cursorY >= scrollDown.y && cursorX < scrollDown.x + scrollDown.w && cursorY < scrollDown.y + scrollDown.h) {
+                if (desktopConfigScroll_ < maxScroll) {
+                    ++desktopConfigScroll_;
+                    markDirty(body);
+                }
+                updateHover(cursorX, cursorY);
+                return;
+            }
+
+            if (cursorX >= listRect.x && cursorY >= listRect.y && cursorX < listRect.x + listRect.w && cursorY < listRect.y + listRect.h) {
+                uint8_t row = static_cast<uint8_t>((cursorY - listRect.y) / 10);
+                uint8_t slot = static_cast<uint8_t>(desktopConfigScroll_ + row);
+                if (slot < kDesktopSlotCount) {
                     WindowKind current = desktopSlots_[slot];
                     uint8_t idx = 0;
                     for (uint8_t i = 0; i < kDesktopAssignableCount; ++i) {
@@ -1285,10 +1835,29 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     return;
                 }
             }
+        } else if (w.kind == WindowKind::Reboot) {
+            const int16_t localY = static_cast<int16_t>(cursorY - body.y);
+            if (localY >= 22 && localY < 80) {
+                const uint8_t row = static_cast<uint8_t>((localY - 22) / 14);
+                if (row == 0) {
+                    emit(katux::core::EventType::ShutdownRequest, 0, 0);
+                } else if (row == 1) {
+                    emit(katux::core::EventType::ShutdownRequest, 1, 0);
+                } else if (row == 2) {
+                    emit(katux::core::EventType::ShutdownRequest, 4, 0);
+                } else if (row == 3) {
+                    emit(katux::core::EventType::ShutdownRequest, 5, 0);
+                }
+                notify("Power command sent");
+                updateHover(cursorX, cursorY);
+                return;
+            }
         } else if (w.kind == WindowKind::AppHub) {
             const uint8_t totalPages = static_cast<uint8_t>((kHubEntryCount + kHubPerPage - 1U) / kHubPerPage);
             const Rect prevBtn{static_cast<int16_t>(body.x + body.w - 56), static_cast<int16_t>(body.y + 4), 12, 10};
             const Rect nextBtn{static_cast<int16_t>(body.x + body.w - 40), static_cast<int16_t>(body.y + 4), 12, 10};
+            const Rect searchBtn{static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 4), 18, 10};
+            const Rect searchBox{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 20), static_cast<int16_t>(body.w - 16), 12};
 
             if (cursorX >= prevBtn.x && cursorY >= prevBtn.y && cursorX < prevBtn.x + prevBtn.w && cursorY < prevBtn.y + prevBtn.h) {
                 if (totalPages > 0) {
@@ -1307,24 +1876,74 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 return;
             }
 
-            const int16_t gridX = static_cast<int16_t>(body.x + 8);
-            const int16_t gridY = static_cast<int16_t>(body.y + 22);
-            const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
-            for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
-                const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
-                if (idx >= kHubEntryCount) break;
-                const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
-                const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
-                const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
-                if (cursorX >= card.x && cursorY >= card.y && cursorX < card.x + card.w && cursorY < card.y + card.h) {
-                    appHubSelected_ = idx;
-                    if (createKindWindow(kHubEntries[idx].kind) >= 0) {
-                        notify("App launched");
-                    } else {
-                        notify("No free slot");
+            if ((cursorX >= searchBtn.x && cursorY >= searchBtn.y && cursorX < searchBtn.x + searchBtn.w && cursorY < searchBtn.y + searchBtn.h) ||
+                (cursorX >= searchBox.x && cursorY >= searchBox.y && cursorX < searchBox.x + searchBox.w && cursorY < searchBox.y + searchBox.h)) {
+                keyboard_.open(globalSearchQuery_);
+                appHubSearchKeyboardOpen_ = true;
+                globalSearchRebuild();
+                wifiKeyboardOpen_ = false;
+                notepadKeyboardOpen_ = false;
+                explorerKeyboardOpen_ = false;
+                explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                browserKeyboardOpen_ = false;
+                browserKeyboardEditingForm_ = false;
+                updateHover(cursorX, cursorY);
+                return;
+            }
+
+            if (appHubSearchKeyboardOpen_) {
+                const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+                if (keyboard_.onClick(cursorX, cursorY, keyRect)) {
+                    strlcpy(globalSearchQuery_, keyboard_.value(), sizeof(globalSearchQuery_));
+                    globalSearchRebuild();
+                    if (globalSearchSelected_ >= globalSearchCount_) {
+                        globalSearchSelected_ = globalSearchCount_ > 0 ? static_cast<uint8_t>(globalSearchCount_ - 1U) : 0;
+                    }
+                    if (keyboard_.consumeAccepted() || !keyboard_.isOpen()) {
+                        appHubSearchKeyboardOpen_ = false;
                     }
                     updateHover(cursorX, cursorY);
                     return;
+                }
+            }
+
+            const bool searchActive = globalSearchQuery_[0] != '\0';
+            if (searchActive) {
+                const Rect listRect{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 36), static_cast<int16_t>(body.w - 16), static_cast<int16_t>(body.h - 42)};
+                if (cursorX >= listRect.x && cursorY >= listRect.y && cursorX < listRect.x + listRect.w && cursorY < listRect.y + listRect.h) {
+                    const int16_t rowH = 12;
+                    const uint8_t row = static_cast<uint8_t>((cursorY - listRect.y) / rowH);
+                    if (row < globalSearchCount_) {
+                        globalSearchSelected_ = row;
+                        if (globalSearchLaunchResult(globalSearchResults_[row])) {
+                            notify("Search launch");
+                        } else {
+                            notify("Search failed");
+                        }
+                    }
+                    updateHover(cursorX, cursorY);
+                    return;
+                }
+            } else {
+                const int16_t gridX = static_cast<int16_t>(body.x + 8);
+                const int16_t gridY = static_cast<int16_t>(body.y + 36);
+                const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
+                for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
+                    const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
+                    if (idx >= kHubEntryCount) break;
+                    const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
+                    const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
+                    const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
+                    if (cursorX >= card.x && cursorY >= card.y && cursorX < card.x + card.w && cursorY < card.y + card.h) {
+                        appHubSelected_ = idx;
+                        if (createKindWindow(kHubEntries[idx].kind) >= 0) {
+                            notify("App launched");
+                        } else {
+                            notify("No free slot");
+                        }
+                        updateHover(cursorX, cursorY);
+                        return;
+                    }
                 }
             }
         } else if (w.kind == WindowKind::GamePixel) {
@@ -1399,6 +2018,72 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     orbitOver_ = false;
                 }
             }
+        } else if (w.kind == WindowKind::GamePlinko) {
+            const int16_t logicalW = 120;
+            const int16_t logicalH = 78;
+            const int16_t topPad = 18;
+            int16_t scale = static_cast<int16_t>((body.h - topPad - 12) / logicalH);
+            const int16_t scaleByWidth = static_cast<int16_t>((body.w - 10) / logicalW);
+            if (scaleByWidth < scale) scale = scaleByWidth;
+            if (scale < 1) scale = 1;
+            const int16_t arenaW = static_cast<int16_t>(logicalW * scale);
+            const int16_t arenaX = static_cast<int16_t>(body.x + (body.w - arenaW) / 2);
+
+            const Rect modeBtn{static_cast<int16_t>(body.x + 54), static_cast<int16_t>(body.y + body.h - 14), 56, 10};
+            if (cursorX >= modeBtn.x && cursorY >= modeBtn.y && cursorX < modeBtn.x + modeBtn.w && cursorY < modeBtn.y + modeBtn.h) {
+                plinkoMode_ = static_cast<uint8_t>((plinkoMode_ + 1U) % 3U);
+                plinkoBallActive_ = false;
+                plinkoLastScored_ = false;
+                plinkoChaosWind16_ = 0;
+                plinkoBallX16_ = 60 * 16;
+                plinkoBallY16_ = 6 * 16;
+                notify(plinkoMode_ == 0 ? "Plinko: Normal" : (plinkoMode_ == 1 ? "Plinko: Hard" : "Plinko: Chaos"));
+                markDirty(body);
+                return;
+            }
+
+            const Rect resetBtn{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 14), 44, 10};
+            if (cursorX >= resetBtn.x && cursorY >= resetBtn.y && cursorX < resetBtn.x + resetBtn.w && cursorY < resetBtn.y + resetBtn.h) {
+                plinkoBallX16_ = 60 * 16;
+                plinkoBallY16_ = 10 * 16;
+                plinkoBallVx16_ = 0;
+                plinkoBallVy16_ = 0;
+                plinkoScore_ = 0;
+                plinkoBestDrop_ = 0;
+                plinkoDrops_ = 0;
+                plinkoLastMult_ = 0;
+                plinkoChaosWind16_ = 0;
+                plinkoBallActive_ = false;
+                plinkoLastScored_ = false;
+                markDirty(body);
+                return;
+            }
+
+            if (!plinkoBallActive_) {
+                int16_t spawnX = 60;
+                if (cursorX >= arenaX && cursorX < arenaX + arenaW) {
+                    spawnX = static_cast<int16_t>((cursorX - arenaX) / scale);
+                }
+                if (spawnX < 5) spawnX = 5;
+                if (spawnX > 115) spawnX = 115;
+                plinkoBallX16_ = static_cast<int16_t>(spawnX * 16);
+                plinkoBallY16_ = 6 * 16;
+                int16_t initialVx = static_cast<int16_t>(random(-6, 7));
+                if (plinkoMode_ == 1) {
+                    initialVx = static_cast<int16_t>(random(-9, 10));
+                } else if (plinkoMode_ == 2) {
+                    initialVx = static_cast<int16_t>(random(-12, 13));
+                }
+                plinkoBallVx16_ = initialVx;
+                plinkoBallVy16_ = 0;
+                plinkoBallActive_ = true;
+                plinkoLastScored_ = false;
+                if (plinkoDrops_ < 255) {
+                    ++plinkoDrops_;
+                }
+                plinkoStepMs_ = millis();
+                markDirty(body);
+            }
         } else if (w.kind == WindowKind::Notifications) {
             const Rect clearBtn{static_cast<int16_t>(body.x + body.w - 50), static_cast<int16_t>(body.y + body.h - 13), 44, 9};
             if (cursorX >= clearBtn.x && cursorY >= clearBtn.y && cursorX < clearBtn.x + clearBtn.w && cursorY < clearBtn.y + clearBtn.h) {
@@ -1448,6 +2133,8 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 keyboard_.open(wifiPassword_);
                 wifiKeyboardOpen_ = true;
                 notepadKeyboardOpen_ = false;
+                explorerKeyboardOpen_ = false;
+                explorerKeyboardMode_ = ExplorerKeyboardMode::None;
                 browserKeyboardOpen_ = false;
                 browserKeyboardEditingForm_ = false;
             } else if (cursorX >= pingBtn.x && cursorY >= pingBtn.y && cursorX < pingBtn.x + pingBtn.w && cursorY < pingBtn.y + pingBtn.h) {
@@ -1499,6 +2186,8 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 browserKeyboardEditingForm_ = false;
                 wifiKeyboardOpen_ = false;
                 notepadKeyboardOpen_ = false;
+                explorerKeyboardOpen_ = false;
+                explorerKeyboardMode_ = ExplorerKeyboardMode::None;
                 markDirty(windowBody(w));
                 updateHover(cursorX, cursorY);
                 return;
@@ -1543,6 +2232,10 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     keyboard_.open(formInitial, false);
                     browserKeyboardOpen_ = true;
                     browserKeyboardEditingForm_ = true;
+                    wifiKeyboardOpen_ = false;
+                    notepadKeyboardOpen_ = false;
+                    explorerKeyboardOpen_ = false;
+                    explorerKeyboardMode_ = ExplorerKeyboardMode::None;
                 }
 
                 char requestedImage[100] = "";
@@ -1578,15 +2271,6 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
 }
 
 void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip) {
-    if (notificationCount_ > 0 && notificationSlideY_ > -16) {
-        const Rect top{0, notificationSlideY_, 240, 16};
-        if (!clip || intersects(*clip, top)) {
-            renderer.fillRect(top, 0x18C3);
-            renderer.drawRect(top, 0xFFFF);
-            renderer.drawText(4, static_cast<int16_t>(notificationSlideY_ + 4), notifications_[notificationCount_ - 1], 0xFFFF, 0x18C3);
-        }
-    }
-
     for (uint8_t z = 0; z < count_; ++z) {
         Window& w = windows_[zOrder_[z]];
         if (!w.visible || w.minimized) continue;
@@ -1642,6 +2326,11 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
             } else if (w.kind == WindowKind::GameOrbit) {
                 renderer.drawRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 3), static_cast<int16_t>(iconBox.y + 3), 2, 2}, 0xFFE0);
+            } else if (w.kind == WindowKind::GamePlinko) {
+                renderer.drawRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 2), static_cast<int16_t>(iconBox.y + 2), 1, 1}, 0xFFE0);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 5), static_cast<int16_t>(iconBox.y + 2), 1, 1}, 0xFFE0);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 3), static_cast<int16_t>(iconBox.y + 4), 1, 1}, 0xFFE0);
             } else if (w.kind == WindowKind::Notifications) {
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 2), 6, 5}, 0xFFFF);
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 3), static_cast<int16_t>(iconBox.y + 1), 2, 1}, 0xFFFF);
@@ -1656,6 +2345,10 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
                 renderer.drawRect({static_cast<int16_t>(iconBox.x + 2), static_cast<int16_t>(iconBox.y + 2), 4, 4}, 0x001F);
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 3), static_cast<int16_t>(iconBox.y + 3), 1, 1}, 0x07E0);
+            } else if (w.kind == WindowKind::DateTime) {
+                renderer.drawRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 4), static_cast<int16_t>(iconBox.y + 2), 1, 3}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 4), static_cast<int16_t>(iconBox.y + 4), 2, 1}, 0xFFFF);
             } else if (w.kind == WindowKind::DesktopConfig) {
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 1}, 0xFFFF);
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 3), 6, 1}, 0xFFFF);
@@ -1713,6 +2406,8 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
             renderGamePixel(renderer, t, w, clip);
         } else if (w.kind == WindowKind::GameOrbit) {
             renderGameOrbit(renderer, t, w, clip);
+        } else if (w.kind == WindowKind::GamePlinko) {
+            renderGamePlinko(renderer, t, w, clip);
         } else if (w.kind == WindowKind::Notifications) {
             renderNotifications(renderer, t, w, clip);
         } else if (w.kind == WindowKind::WifiManager) {
@@ -1721,8 +2416,22 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
             renderBrowser(renderer, t, w, clip);
         } else if (w.kind == WindowKind::ImageVisualizer) {
             renderImageVisualizer(renderer, t, w, clip);
+        } else if (w.kind == WindowKind::DateTime) {
+            renderDateTime(renderer, t, w, clip);
         } else if (w.kind == WindowKind::DesktopConfig) {
             renderDesktopConfig(renderer, t, w, clip);
+        } else if (w.kind == WindowKind::Reboot) {
+            renderReboot(renderer, t, w, clip);
+        }
+    }
+
+    if (notificationCount_ > 0 && notificationSlideY_ > -16) {
+        const char* notifText = notifications_[notificationCount_ - 1];
+        const Rect top = notificationRectFor(notifText, notificationSlideY_);
+        if (!clip || intersects(*clip, top)) {
+            renderer.fillRect(top, 0x18C3);
+            renderer.drawRect(top, 0xFFFF);
+            renderer.drawText(static_cast<int16_t>(top.x + 4), static_cast<int16_t>(top.y + 4), notifText, 0xFFFF, 0x18C3);
         }
     }
 }
@@ -1755,13 +2464,22 @@ bool WindowManager::windowIsActive(uint8_t id) const {
     return false;
 }
 
-void WindowManager::setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled) {
+void WindowManager::setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay,
+                                   bool animationsEnabled, bool autoTime, int8_t timezoneOffset, uint16_t manualYear, uint8_t manualMonth,
+                                   uint8_t manualDay, uint8_t manualHour, uint8_t manualMinute) {
     darkTheme_ = darkTheme;
     brightness_ = brightness;
     cursorSpeed_ = cursorSpeed;
     performanceProfile_ = performanceProfile;
     debugOverlay_ = debugOverlay;
     animationsEnabled_ = animationsEnabled;
+    autoTime_ = autoTime;
+    timezoneOffset_ = timezoneOffset;
+    manualYear_ = manualYear;
+    manualMonth_ = manualMonth;
+    manualDay_ = manualDay;
+    manualHour_ = manualHour;
+    manualMinute_ = manualMinute;
 }
 
 void WindowManager::setRuntimeStats(uint8_t fps, uint32_t freeHeap, uint32_t uptimeMs, uint8_t queueDepth) {
@@ -1773,6 +2491,12 @@ void WindowManager::setRuntimeStats(uint8_t fps, uint32_t freeHeap, uint32_t upt
 
 void WindowManager::notify(const char* text) {
     if (!text || !text[0]) return;
+
+    if (notificationCount_ > 0 && notificationSlideY_ > -16) {
+        const char* previous = notifications_[notificationCount_ - 1];
+        markDirty(notificationRectFor(previous, notificationSlideY_));
+    }
+
     if (notificationCount_ >= 8) {
         for (uint8_t i = 1; i < 8; ++i) {
             strlcpy(notifications_[i - 1], notifications_[i], sizeof(notifications_[0]));
@@ -1783,7 +2507,8 @@ void WindowManager::notify(const char* text) {
     ++notificationCount_;
     notificationSlideY_ = -16;
     notificationHoldUntilMs_ = millis() + 1800U;
-    markDirty({0, -16, 240, 32});
+    markDirty(notificationRectFor(text, -16));
+    markDirty(notificationRectFor(text, -8));
 }
 
 uint8_t WindowManager::consumeDirtyRegions(Rect* out, uint8_t maxItems) {
@@ -1860,6 +2585,16 @@ void WindowManager::getDesktopConfig(bool& showIcons, WindowKind* slots, uint8_t
 void WindowManager::setDesktopIconsVisible(bool visible) {
     if (desktopShowIcons_ == visible) return;
     desktopShowIcons_ = visible;
+    desktopSaveConfig();
+    markDirty({0, 0, 240, 111});
+}
+
+void WindowManager::cleanDesktopToAppsOnly() {
+    desktopSlots_[0] = WindowKind::AppHub;
+    for (uint8_t i = 1; i < kDesktopSlotCount; ++i) {
+        desktopSlots_[i] = WindowKind::Generic;
+    }
+    desktopConfigScroll_ = 0;
     desktopSaveConfig();
     markDirty({0, 0, 240, 111});
 }
@@ -1998,21 +2733,404 @@ void WindowManager::desktopSaveConfig() {
     }
 }
 
-uint8_t WindowManager::explorerFolderForName(const char* name) const {
-    if (!name || !name[0]) return 0;
-    const char* ext = strrchr(name, '.');
-    if (!ext || !ext[1]) return 0;
-    if (strcmp(ext, ".txt") == 0 || strcmp(ext, ".log") == 0 || strcmp(ext, ".cfg") == 0) return 0;
-    if (strcmp(ext, ".bin") == 0 || strcmp(ext, ".ino") == 0 || strcmp(ext, ".cpp") == 0 || strcmp(ext, ".h") == 0) return 1;
-    return 2;
+bool WindowManager::normalizeExplorerPath(const char* in, char* out, size_t outLen) const {
+    if (!out || outLen == 0) return false;
+    out[0] = '\0';
+    if (!in || !in[0]) {
+        strlcpy(out, "/", outLen);
+        return true;
+    }
+    char tmp[96] = "";
+    strlcpy(tmp, in, sizeof(tmp));
+    if (tmp[0] != '/') {
+        char prefixed[96] = "/";
+        strlcat(prefixed, tmp, sizeof(prefixed));
+        strlcpy(tmp, prefixed, sizeof(tmp));
+    }
+    size_t n = strlen(tmp);
+    while (n > 1 && tmp[n - 1] == '/') {
+        tmp[n - 1] = '\0';
+        --n;
+    }
+    strlcpy(out, tmp, outLen);
+    return true;
+}
+
+bool WindowManager::explorerNameToPath(const char* name, char* out, size_t outLen) const {
+    if (!name || !name[0] || !out || outLen == 0) return false;
+    if (strcmp(explorerPath_, "/") == 0) {
+        snprintf(out, outLen, "/%s", name);
+    } else {
+        snprintf(out, outLen, "%s/%s", explorerPath_, name);
+    }
+    return true;
+}
+
+bool WindowManager::explorerIsImageFile(const char* path) const {
+    if (!path || !path[0]) return false;
+    const char* dot = strrchr(path, '.');
+    if (!dot || !dot[1]) return false;
+    char ext[8] = "";
+    size_t n = 0;
+    for (const char* p = dot + 1; *p && n + 1 < sizeof(ext); ++p) {
+        ext[n++] = static_cast<char>(tolower(*p));
+    }
+    ext[n] = '\0';
+    return strcmp(ext, "jpg") == 0 || strcmp(ext, "jpeg") == 0 || strcmp(ext, "png") == 0 || strcmp(ext, "bmp") == 0 || strcmp(ext, "webp") == 0;
+}
+
+bool WindowManager::explorerIsTextLikeFile(const char* path) const {
+    if (!path || !path[0]) return false;
+    const char* dot = strrchr(path, '.');
+    if (!dot || !dot[1]) return true;
+    char ext[10] = "";
+    size_t n = 0;
+    for (const char* p = dot + 1; *p && n + 1 < sizeof(ext); ++p) {
+        ext[n++] = static_cast<char>(tolower(*p));
+    }
+    ext[n] = '\0';
+    return strcmp(ext, "txt") == 0 || strcmp(ext, "log") == 0 || strcmp(ext, "cfg") == 0 || strcmp(ext, "ini") == 0 || strcmp(ext, "json") == 0 ||
+           strcmp(ext, "xml") == 0 || strcmp(ext, "csv") == 0 || strcmp(ext, "md") == 0 || strcmp(ext, "ino") == 0 || strcmp(ext, "h") == 0 ||
+           strcmp(ext, "hpp") == 0 || strcmp(ext, "c") == 0 || strcmp(ext, "cpp") == 0 || strcmp(ext, "js") == 0 || strcmp(ext, "ts") == 0 ||
+           strcmp(ext, "py") == 0 || strcmp(ext, "html") == 0 || strcmp(ext, "css") == 0;
+}
+
+bool WindowManager::explorerFileLooksBinary(const char* path) const {
+    if (!path || !path[0]) return false;
+    File file = SPIFFS.open(path, FILE_READ);
+    if (!file) return false;
+    uint8_t buf[96];
+    const size_t n = file.read(buf, sizeof(buf));
+    file.close();
+    if (n == 0) return false;
+    uint16_t weird = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t c = buf[i];
+        if (c == 0) return true;
+        if (c < 9 || (c > 13 && c < 32)) ++weird;
+    }
+    return weird > (n / 4);
+}
+
+bool WindowManager::explorerReadTextFile(const char* path, char* out, size_t outLen) const {
+    if (!path || !path[0] || !out || outLen == 0) return false;
+    out[0] = '\0';
+    File file = SPIFFS.open(path, FILE_READ);
+    if (!file) return false;
+    const size_t read = file.readBytes(out, outLen - 1);
+    out[read] = '\0';
+    file.close();
+    return true;
+}
+
+bool WindowManager::explorerWriteTextFile(const char* path, const char* text) const {
+    if (!path || !path[0]) return false;
+    if (SPIFFS.exists(path)) {
+        SPIFFS.remove(path);
+    }
+    File file = SPIFFS.open(path, FILE_WRITE);
+    if (!file) return false;
+    if (text && text[0]) file.print(text);
+    file.close();
+    return true;
+}
+
+bool WindowManager::explorerCopyFile(const char* src, const char* dst) const {
+    if (!src || !src[0] || !dst || !dst[0]) return false;
+    File in = SPIFFS.open(src, FILE_READ);
+    if (!in) return false;
+    File out = SPIFFS.open(dst, FILE_WRITE);
+    if (!out) {
+        in.close();
+        return false;
+    }
+    uint8_t buf[128];
+    while (in.available()) {
+        const size_t n = in.read(buf, sizeof(buf));
+        if (n == 0) break;
+        if (out.write(buf, n) != n) {
+            in.close();
+            out.close();
+            return false;
+        }
+    }
+    in.close();
+    out.close();
+    return true;
+}
+
+bool WindowManager::explorerDeletePath(const char* path) {
+    if (!path || !path[0]) return false;
+    File file = SPIFFS.open(path, FILE_READ);
+    if (file) {
+        file.close();
+        return SPIFFS.remove(path);
+    }
+
+    char prefix[96] = "";
+    strlcpy(prefix, path, sizeof(prefix));
+    if (prefix[strlen(prefix) - 1] != '/') strlcat(prefix, "/", sizeof(prefix));
+
+    bool removedAny = false;
+    File root = SPIFFS.open("/");
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
+        return false;
+    }
+    File entry = root.openNextFile();
+    while (entry) {
+        const char* full = entry.name();
+        entry.close();
+        if (full && strncmp(full, prefix, strlen(prefix)) == 0) {
+            if (SPIFFS.remove(full)) removedAny = true;
+        }
+        entry = root.openNextFile();
+    }
+    root.close();
+    return removedAny;
+}
+
+void WindowManager::explorerClearSelection() {
+    explorerSelectedCount_ = 0;
+    explorerSelected_ = -1;
+    for (uint8_t i = 0; i < explorerCount_; ++i) {
+        explorer_[i].selected = false;
+    }
+}
+
+void WindowManager::explorerToggleSelection(int16_t index) {
+    if (index < 0 || index >= explorerCount_) return;
+    ExplorerEntry& item = explorer_[index];
+    item.selected = !item.selected;
+    if (item.selected) {
+        if (explorerSelectedCount_ < 255) ++explorerSelectedCount_;
+        explorerSelected_ = static_cast<int8_t>(index);
+    } else if (explorerSelectedCount_ > 0) {
+        --explorerSelectedCount_;
+        if (explorerSelected_ == index) explorerSelected_ = -1;
+    }
+    if (explorerSelectedCount_ == 0) {
+        explorerMultiSelect_ = false;
+    }
+}
+
+bool WindowManager::explorerCollectTargets(int16_t* out, uint8_t max, uint8_t& outCount) const {
+    outCount = 0;
+    if (!out || max == 0) return false;
+    if (explorerMultiSelect_ && explorerSelectedCount_ > 0) {
+        for (uint8_t i = 0; i < explorerCount_ && outCount < max; ++i) {
+            if (explorer_[i].selected) {
+                out[outCount++] = static_cast<int16_t>(i);
+            }
+        }
+    } else if (explorerSelected_ >= 0 && explorerSelected_ < static_cast<int8_t>(explorerCount_)) {
+        out[outCount++] = explorerSelected_;
+    }
+    return outCount > 0;
+}
+
+void WindowManager::explorerFillClipboard(bool cutMode) {
+    explorerClipboardCount_ = 0;
+    explorerClipboardCut_ = cutMode;
+    int16_t targets[kExplorerClipboardMax];
+    uint8_t targetCount = 0;
+    if (!explorerCollectTargets(targets, kExplorerClipboardMax, targetCount)) return;
+    for (uint8_t i = 0; i < targetCount && i < kExplorerClipboardMax; ++i) {
+        const int16_t idx = targets[i];
+        if (idx < 0 || idx >= explorerCount_) continue;
+        strlcpy(explorerClipboardPaths_[explorerClipboardCount_], explorer_[idx].path, sizeof(explorerClipboardPaths_[0]));
+        ++explorerClipboardCount_;
+    }
+}
+
+bool WindowManager::explorerPasteClipboardTo(const char* dstDir) {
+    if (!dstDir || !dstDir[0] || explorerClipboardCount_ == 0) return false;
+    bool allOk = true;
+    for (uint8_t i = 0; i < explorerClipboardCount_; ++i) {
+        const char* src = explorerClipboardPaths_[i];
+        if (!src[0]) continue;
+        const char* base = strrchr(src, '/');
+        base = base ? base + 1 : src;
+        char dst[96] = "";
+        if (strcmp(dstDir, "/") == 0) {
+            snprintf(dst, sizeof(dst), "/%s", base);
+        } else {
+            snprintf(dst, sizeof(dst), "%s/%s", dstDir, base);
+        }
+        if (strcmp(dst, src) == 0) {
+            allOk = false;
+            continue;
+        }
+        bool ok = false;
+        if (explorerClipboardCut_) {
+            ok = SPIFFS.rename(src, dst);
+        } else {
+            ok = explorerCopyFile(src, dst);
+        }
+        if (!ok) {
+            allOk = false;
+        }
+    }
+    if (explorerClipboardCut_) {
+        explorerClipboardCount_ = 0;
+        explorerClipboardCut_ = false;
+    }
+    return allOk;
+}
+
+void WindowManager::explorerOpenFile(const char* path) {
+    if (!path || !path[0]) return;
+
+    if (explorerIsImageFile(path)) {
+        int8_t imgWin = createKindWindow(WindowKind::ImageVisualizer);
+        if (imgWin >= 0) {
+            Window& iw = windows_[static_cast<uint8_t>(imgWin)];
+            strlcpy(iw.title, "Image visualizer", sizeof(iw.title));
+            strlcpy(imageViewerSrcByWindow_[iw.id], path, sizeof(imageViewerSrcByWindow_[iw.id]));
+        }
+        return;
+    }
+
+    strlcpy(notepadPath_, path, sizeof(notepadPath_));
+    notepadBinary_ = explorerFileLooksBinary(path) || !explorerIsTextLikeFile(path);
+    if (notepadBinary_) {
+        notepadText_[0] = '\0';
+        notify("Binary file");
+    } else if (!explorerReadTextFile(path, notepadText_, sizeof(notepadText_))) {
+        notepadText_[0] = '\0';
+    }
+    notepadDirty_ = false;
+    int8_t np = createKindWindow(WindowKind::Notepad);
+    if (np >= 0) {
+        Window& nw = windows_[static_cast<uint8_t>(np)];
+        const char* base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        copyTrim(nw.title, sizeof(nw.title), base, sizeof(nw.title) - 1);
+    }
+}
+
+void WindowManager::explorerOpenSelected() {
+    if (explorerSelected_ < 0 || explorerSelected_ >= static_cast<int8_t>(explorerCount_)) return;
+    const ExplorerEntry& item = explorer_[explorerSelected_];
+    if (item.isDir) {
+        strlcpy(explorerPath_, item.path, sizeof(explorerPath_));
+        explorerScroll_ = 0;
+        refreshExplorerEntries();
+        return;
+    }
+    explorerOpenFile(item.path);
+}
+
+void WindowManager::explorerOpenCreateDialog() {
+    keyboard_.open("new.txt");
+    explorerKeyboardMode_ = ExplorerKeyboardMode::CreateFile;
+    explorerKeyboardOpen_ = true;
+    wifiKeyboardOpen_ = false;
+    notepadKeyboardOpen_ = false;
+    browserKeyboardOpen_ = false;
+    browserKeyboardEditingForm_ = false;
+}
+
+void WindowManager::explorerOpenRenameDialog() {
+    if (explorerSelectedCount_ > 1) {
+        notify("Rename one file");
+        return;
+    }
+    if (explorerSelected_ < 0 || explorerSelected_ >= static_cast<int8_t>(explorerCount_)) return;
+    keyboard_.open(explorer_[explorerSelected_].name);
+    explorerKeyboardMode_ = ExplorerKeyboardMode::Rename;
+    explorerKeyboardOpen_ = true;
+    wifiKeyboardOpen_ = false;
+    notepadKeyboardOpen_ = false;
+    browserKeyboardOpen_ = false;
+    browserKeyboardEditingForm_ = false;
+}
+
+void WindowManager::explorerOpenMoveDialog() {
+    if (explorerSelectedCount_ > 1) {
+        notify("Use CUT then PST");
+        return;
+    }
+    if (explorerSelected_ < 0 || explorerSelected_ >= static_cast<int8_t>(explorerCount_)) return;
+    strlcpy(explorerMoveSource_, explorer_[explorerSelected_].path, sizeof(explorerMoveSource_));
+    keyboard_.open(explorerPath_);
+    explorerKeyboardMode_ = ExplorerKeyboardMode::Move;
+    explorerKeyboardOpen_ = true;
+    wifiKeyboardOpen_ = false;
+    notepadKeyboardOpen_ = false;
+    browserKeyboardOpen_ = false;
+    browserKeyboardEditingForm_ = false;
+}
+
+void WindowManager::explorerApplyKeyboardAccept(const char* value) {
+    if (!value || !value[0]) return;
+    if (explorerKeyboardMode_ == ExplorerKeyboardMode::CreateFile) {
+        char path[96] = "";
+        if (explorerNameToPath(value, path, sizeof(path)) && explorerWriteTextFile(path, "")) {
+            notify("File created");
+            refreshExplorerEntries();
+        } else {
+            notify("Create failed");
+        }
+        return;
+    }
+
+    if (explorerKeyboardMode_ == ExplorerKeyboardMode::Rename) {
+        if (explorerSelected_ < 0 || explorerSelected_ >= static_cast<int8_t>(explorerCount_)) return;
+        char dst[96] = "";
+        if (!explorerNameToPath(value, dst, sizeof(dst))) return;
+        if (SPIFFS.rename(explorer_[explorerSelected_].path, dst)) {
+            refreshExplorerEntries();
+            notify("Renamed");
+        } else {
+            notify("Rename failed");
+        }
+        return;
+    }
+
+    if (explorerKeyboardMode_ == ExplorerKeyboardMode::Move) {
+        char dstDir[96] = "";
+        if (!normalizeExplorerPath(value, dstDir, sizeof(dstDir))) return;
+
+        if (explorerClipboardCut_ && explorerClipboardCount_ > 0) {
+            if (explorerPasteClipboardTo(dstDir)) {
+                notify("Moved");
+            } else {
+                notify("Move partial");
+            }
+            refreshExplorerEntries();
+            return;
+        }
+
+        const char* base = strrchr(explorerMoveSource_, '/');
+        base = base ? base + 1 : explorerMoveSource_;
+        char dst[96] = "";
+        if (strcmp(dstDir, "/") == 0) {
+            snprintf(dst, sizeof(dst), "/%s", base);
+        } else {
+            snprintf(dst, sizeof(dst), "%s/%s", dstDir, base);
+        }
+        if (SPIFFS.rename(explorerMoveSource_, dst)) {
+            notify("Moved");
+            refreshExplorerEntries();
+        } else {
+            notify("Move failed");
+        }
+    }
 }
 
 void WindowManager::refreshExplorerEntries() {
     explorerCount_ = 0;
     explorerSelected_ = -1;
+    explorerSelectedCount_ = 0;
+    explorerDeleteConfirmUntilMs_ = 0;
     if (!SPIFFS.begin(false)) {
         return;
     }
+
+    char current[96] = "";
+    normalizeExplorerPath(explorerPath_, current, sizeof(current));
+    strlcpy(explorerPath_, current, sizeof(explorerPath_));
 
     File root = SPIFFS.open("/");
     if (!root || !root.isDirectory()) {
@@ -2020,20 +3138,94 @@ void WindowManager::refreshExplorerEntries() {
         return;
     }
 
-    File file = root.openNextFile();
-    while (file && explorerCount_ < kExplorerEntryCount) {
-        if (!file.isDirectory()) {
-            const char* full = file.name();
-            const char* name = full;
-            if (name[0] == '/') ++name;
-            copyTrim(explorer_[explorerCount_].name, sizeof(explorer_[explorerCount_].name), name, 30);
-            explorer_[explorerCount_].folder = explorerFolderForName(explorer_[explorerCount_].name);
-            explorer_[explorerCount_].deleted = false;
-            ++explorerCount_;
+    const bool atRoot = strcmp(current, "/") == 0;
+    const size_t prefixLen = strlen(current);
+    File entry = root.openNextFile();
+    while (entry) {
+        const char* full = entry.name();
+        const uint32_t size = entry.size();
+        entry.close();
+
+        if (!full || full[0] != '/') {
+            entry = root.openNextFile();
+            continue;
         }
-        file = root.openNextFile();
+
+        if (!atRoot) {
+            if (strncmp(full, current, prefixLen) != 0 || full[prefixLen] != '/') {
+                entry = root.openNextFile();
+                continue;
+            }
+        }
+
+        const char* rest = atRoot ? (full + 1) : (full + prefixLen + 1);
+        if (!rest || !rest[0]) {
+            entry = root.openNextFile();
+            continue;
+        }
+
+        const char* slash = strchr(rest, '/');
+        char child[32] = "";
+        bool isDir = slash != nullptr;
+        if (isDir) {
+            size_t n = static_cast<size_t>(slash - rest);
+            if (n >= sizeof(child)) n = sizeof(child) - 1;
+            memcpy(child, rest, n);
+            child[n] = '\0';
+        } else {
+            copyTrim(child, sizeof(child), rest, sizeof(child) - 1);
+        }
+        if (!child[0]) {
+            entry = root.openNextFile();
+            continue;
+        }
+
+        bool exists = false;
+        for (uint8_t i = 0; i < explorerCount_; ++i) {
+            if (strcmp(explorer_[i].name, child) == 0 && explorer_[i].isDir == isDir) {
+                exists = true;
+                break;
+            }
+        }
+        if (exists || explorerCount_ >= kExplorerEntryCount) {
+            entry = root.openNextFile();
+            continue;
+        }
+
+        ExplorerEntry& out = explorer_[explorerCount_++];
+        strlcpy(out.name, child, sizeof(out.name));
+        out.isDir = isDir;
+        out.selected = false;
+        out.size = isDir ? 0U : size;
+        if (atRoot) {
+            snprintf(out.path, sizeof(out.path), "/%s", child);
+        } else {
+            snprintf(out.path, sizeof(out.path), "%s/%s", current, child);
+        }
+
+        entry = root.openNextFile();
     }
     root.close();
+
+    for (uint8_t i = 0; i < explorerCount_; ++i) {
+        for (uint8_t j = static_cast<uint8_t>(i + 1); j < explorerCount_; ++j) {
+            bool swap = false;
+            if (explorer_[i].isDir != explorer_[j].isDir) {
+                swap = !explorer_[i].isDir && explorer_[j].isDir;
+            } else if (strcmp(explorer_[i].name, explorer_[j].name) > 0) {
+                swap = true;
+            }
+            if (swap) {
+                ExplorerEntry tmp = explorer_[i];
+                explorer_[i] = explorer_[j];
+                explorer_[j] = tmp;
+            }
+        }
+    }
+
+    if (explorerScroll_ < 0) explorerScroll_ = 0;
+    const int16_t maxScroll = explorerCount_ > 1 ? static_cast<int16_t>(explorerCount_ - 1) : 0;
+    if (explorerScroll_ > maxScroll) explorerScroll_ = maxScroll;
 }
 
 void WindowManager::browserSetStatus(const char* text) {
@@ -3036,6 +4228,49 @@ void WindowManager::renderSettings(Renderer& renderer, const Theme& t, const Win
     }
 }
 
+void WindowManager::renderDateTime(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
+    const Rect body = windowBody(w);
+    if (clip && !intersects(*clip, body)) return;
+
+    renderer.fillRect(body, 0xE73C);
+    renderer.drawText(body.x + 6, body.y + 6, "Date and Time", 0x0000, 0xE73C);
+
+    time_t nowTs = time(nullptr);
+    struct tm tmv;
+    char nowLine[24] = "Clock syncing...";
+    char dateLine[24] = "--";
+    if (nowTs > 1000 && localtime_r(&nowTs, &tmv)) {
+        strftime(nowLine, sizeof(nowLine), "%H:%M:%S", &tmv);
+        strftime(dateLine, sizeof(dateLine), "%a %d %b %Y", &tmv);
+    }
+
+    renderer.fillRect({static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 18), static_cast<int16_t>(body.w - 12), 16}, 0x31A6);
+    renderer.drawRect({static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 18), static_cast<int16_t>(body.w - 12), 16}, 0x7BEF);
+    renderer.drawText(body.x + 10, body.y + 20, nowLine, 0xFFFF, 0x31A6);
+    renderer.drawText(body.x + 86, body.y + 20, dateLine, 0xBDF7, 0x31A6);
+
+    char line[30] = "";
+    for (uint8_t row = 0; row < 7; ++row) {
+        const int16_t rowY = static_cast<int16_t>(body.y + 38 + row * 12);
+        const uint16_t bg = 0xCE18;
+        renderer.fillRect({static_cast<int16_t>(body.x + 6), rowY, static_cast<int16_t>(body.w - 12), 10}, bg);
+
+        line[0] = '\0';
+        if (row == 0) snprintf(line, sizeof(line), "Auto time: %s", autoTime_ ? "ON" : "OFF");
+        if (row == 1) snprintf(line, sizeof(line), "Timezone UTC%+d", timezoneOffset_);
+        if (row == 2) snprintf(line, sizeof(line), "Year: %u", static_cast<unsigned>(manualYear_));
+        if (row == 3) snprintf(line, sizeof(line), "Month: %02u", manualMonth_);
+        if (row == 4) snprintf(line, sizeof(line), "Day: %02u", manualDay_);
+        if (row == 5) snprintf(line, sizeof(line), "Hour: %02u", manualHour_);
+        if (row == 6) snprintf(line, sizeof(line), "Minute(+5): %02u", manualMinute_);
+
+        renderer.drawText(static_cast<int16_t>(body.x + 9), static_cast<int16_t>(rowY + 1), line, 0x2104, bg);
+    }
+
+    renderer.drawText(body.x + 8, static_cast<int16_t>(body.y + body.h - 12), "Tap rows to edit", 0x4A69, 0xE73C);
+    (void)t;
+}
+
 void WindowManager::renderTaskManager(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
     const Rect body = windowBody(w);
     if (clip && !intersects(*clip, body)) return;
@@ -3153,45 +4388,83 @@ void WindowManager::renderExplorer(Renderer& renderer, const Theme& t, const Win
 
     renderer.fillRect(body, 0xC638);
 
-    const char* folders[kFolderCount] = {"Home", "Apps", "Media"};
-    for (uint8_t i = 0; i < kFolderCount; ++i) {
-        const bool sel = i == explorerFolder_;
-        const Rect tab{static_cast<int16_t>(body.x + 6 + i * 42), static_cast<int16_t>(body.y + 12), 38, 10};
-        renderer.fillRect(tab, sel ? 0x5AEB : 0x7BEF);
-        renderer.drawText(tab.x + 2, tab.y + 1, folders[i], sel ? 0xFFFF : 0x2104, sel ? 0x5AEB : 0x7BEF);
+    const Rect pathBar{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 12), static_cast<int16_t>(body.w - 12), 10};
+    renderer.fillRect(pathBar, explorerMultiSelect_ ? 0xFFE0 : 0xEFFF);
+    renderer.drawRect(pathBar, 0x7BEF);
+    renderer.drawText(pathBar.x + 2, pathBar.y + 1, explorerPath_, 0x0000, explorerMultiSelect_ ? 0xFFE0 : 0xEFFF);
+    if (explorerSelectedCount_ > 0) {
+        char selInfo[20] = "";
+        snprintf(selInfo, sizeof(selInfo), "SEL:%u", static_cast<unsigned>(explorerSelectedCount_));
+        renderer.drawText(static_cast<int16_t>(pathBar.x + pathBar.w - 34), pathBar.y + 1, selInfo, 0x0000, explorerMultiSelect_ ? 0xFFE0 : 0xEFFF);
     }
 
-    const Rect refreshBtn{static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + 12), 20, 10};
-    renderer.fillRect(refreshBtn, 0xBDF7);
-    renderer.drawText(refreshBtn.x + 3, refreshBtn.y + 1, "REF", 0x0000, 0xBDF7);
+    const Rect upBtn{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 26), 18, 10};
+    const Rect newBtn{static_cast<int16_t>(body.x + 26), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect renBtn{static_cast<int16_t>(body.x + 52), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect delBtn{static_cast<int16_t>(body.x + 78), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect cpyBtn{static_cast<int16_t>(body.x + 104), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect movBtn{static_cast<int16_t>(body.x + 130), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect pstBtn{static_cast<int16_t>(body.x + 156), static_cast<int16_t>(body.y + 26), 24, 10};
+    const Rect refBtn{static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 26), 18, 10};
 
-    renderer.fillRect({body.x + 6, static_cast<int16_t>(body.y + 26), static_cast<int16_t>(body.w - 40), static_cast<int16_t>(body.h - 32)}, 0xE71C);
+    renderer.fillRect(upBtn, 0xBDF7);
+    renderer.fillRect(newBtn, 0x07E0);
+    renderer.fillRect(renBtn, 0xFFE0);
+    renderer.fillRect(delBtn, millis() < trashAnimUntilMs_ ? 0xF800 : 0xF920);
+    renderer.fillRect(cpyBtn, 0x5AEB);
+    renderer.fillRect(movBtn, 0xFD20);
+    renderer.fillRect(pstBtn, 0x7BEF);
+    renderer.fillRect(refBtn, 0xBDF7);
 
-    uint8_t row = 0;
-    for (uint8_t i = 0; i < explorerCount_; ++i) {
-        if (explorer_[i].folder != explorerFolder_) continue;
-        if (row >= 8) break;
-        const bool selected = explorerSelected_ == static_cast<int8_t>(i);
-        const int16_t y = static_cast<int16_t>(body.y + 29 + row * 10);
-        const uint16_t bg = selected ? 0xFFE0 : 0xE71C;
-        const uint16_t fg = selected ? 0x0000 : 0x2104;
-        renderer.fillRect({static_cast<int16_t>(body.x + 8), y, static_cast<int16_t>(body.w - 44), 9}, bg);
-        renderer.fillRect({static_cast<int16_t>(body.x + 10), static_cast<int16_t>(y + 2), 6, 5}, selected ? 0xF800 : 0x39E7);
-        renderer.drawText(body.x + 19, static_cast<int16_t>(y + 1), explorer_[i].name, fg, bg);
-        ++row;
+    renderer.drawText(upBtn.x + 4, upBtn.y + 1, "..", 0x0000, 0xBDF7);
+    renderer.drawText(newBtn.x + 2, newBtn.y + 1, "NEW", 0x0000, 0x07E0);
+    renderer.drawText(renBtn.x + 2, renBtn.y + 1, "REN", 0x0000, 0xFFE0);
+    renderer.drawText(delBtn.x + 2, delBtn.y + 1, "DEL", 0xFFFF, millis() < trashAnimUntilMs_ ? 0xF800 : 0xF920);
+    renderer.drawText(cpyBtn.x + 2, cpyBtn.y + 1, "CPY", 0xFFFF, 0x5AEB);
+    renderer.drawText(movBtn.x + 2, movBtn.y + 1, "MOV", 0x0000, 0xFD20);
+    renderer.drawText(pstBtn.x + 2, pstBtn.y + 1, "PST", 0x0000, 0x7BEF);
+    renderer.drawText(refBtn.x + 2, refBtn.y + 1, "R", 0x0000, 0xBDF7);
+
+    const Rect listRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 38), static_cast<int16_t>(body.w - 20), static_cast<int16_t>(body.h - 44)};
+    const Rect scrollUp{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + 40), 8, 10};
+    const Rect scrollDown{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + body.h - 18), 8, 10};
+    renderer.fillRect(listRect, 0xE71C);
+    renderer.drawRect(listRect, 0x9CD3);
+    renderer.fillRect(scrollUp, 0xBDF7);
+    renderer.fillRect(scrollDown, 0xBDF7);
+    renderer.drawText(scrollUp.x + 1, scrollUp.y + 1, "^", 0x0000, 0xBDF7);
+    renderer.drawText(scrollDown.x + 1, scrollDown.y + 1, "v", 0x0000, 0xBDF7);
+
+    const int16_t rowH = 9;
+    int16_t visibleRows = static_cast<int16_t>(listRect.h / rowH);
+    if (visibleRows < 1) visibleRows = 1;
+
+    if (explorerCount_ == 0) {
+        renderer.drawText(listRect.x + 4, listRect.y + 3, "No files", 0x4208, 0xE71C);
+    } else {
+        for (int16_t row = 0; row < visibleRows; ++row) {
+            const int16_t idx = static_cast<int16_t>(explorerScroll_ + row);
+            if (idx < 0 || idx >= explorerCount_) break;
+            const ExplorerEntry& item = explorer_[idx];
+            const bool selected = item.selected || explorerSelected_ == idx;
+            const int16_t y = static_cast<int16_t>(listRect.y + row * rowH);
+            const uint16_t bg = selected ? (explorerMultiSelect_ ? 0xFD20 : 0xFFE0) : 0xE71C;
+            const uint16_t fg = selected ? 0x0000 : 0x2104;
+            renderer.fillRect({static_cast<int16_t>(listRect.x + 1), y, static_cast<int16_t>(listRect.w - 2), rowH - 1}, bg);
+            renderer.fillRect({static_cast<int16_t>(listRect.x + 3), static_cast<int16_t>(y + 2), 5, 5}, item.isDir ? 0xFFE0 : 0x39E7);
+            renderer.drawText(static_cast<int16_t>(listRect.x + 11), static_cast<int16_t>(y + 1), item.name, fg, bg);
+        }
     }
 
-    if (row == 0) {
-        renderer.drawText(body.x + 10, body.y + 31, "No file in folder", 0x4208, 0xE71C);
+    if (explorerDeleteConfirmUntilMs_ > millis()) {
+        renderer.fillRect({static_cast<int16_t>(body.x + body.w - 88), static_cast<int16_t>(body.y + body.h - 14), 82, 10}, 0xF920);
+        renderer.drawText(static_cast<int16_t>(body.x + body.w - 84), static_cast<int16_t>(body.y + body.h - 12), "Press DEL again", 0xFFFF, 0xF920);
     }
 
-    const bool trashAnim = millis() < trashAnimUntilMs_;
-    const Rect trash{static_cast<int16_t>(body.x + body.w - 28), static_cast<int16_t>(body.y + body.h - 18), 20, 14};
-    renderer.fillRect(trash, trashAnim ? 0xF800 : 0x7BEF);
-    renderer.drawRect(trash, 0x0000);
-    renderer.fillRect({static_cast<int16_t>(trash.x + 5), static_cast<int16_t>(trash.y + 4), 10, 7}, 0x39E7);
-    renderer.fillRect({static_cast<int16_t>(trash.x + 4), static_cast<int16_t>(trash.y + 2), 12, 1}, 0x0000);
-    renderer.drawText(trash.x + 2, trash.y + 1, "BIN", 0x0000, trashAnim ? 0xF800 : 0x7BEF);
+    if (explorerKeyboardOpen_ && keyboard_.isOpen()) {
+        const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+        keyboard_.render(renderer, keyRect, darkTheme_, cursorX_, cursorY_);
+    }
 }
 
 void WindowManager::renderNotepad(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
@@ -3204,17 +4477,26 @@ void WindowManager::renderNotepad(Renderer& renderer, const Theme& t, const Wind
     const Rect saveBtn{static_cast<int16_t>(body.x + 42), static_cast<int16_t>(body.y + 4), 32, 10};
     const Rect loadBtn{static_cast<int16_t>(body.x + 78), static_cast<int16_t>(body.y + 4), 32, 10};
 
-    renderer.fillRect(editBtn, 0x7BEF);
-    renderer.fillRect(saveBtn, 0x07E0);
+    renderer.fillRect(editBtn, notepadBinary_ ? 0xC618 : 0x7BEF);
+    renderer.fillRect(saveBtn, notepadBinary_ ? 0xC618 : 0x07E0);
     renderer.fillRect(loadBtn, 0xFFE0);
-    renderer.drawText(editBtn.x + 4, editBtn.y + 1, "Edit", 0x0000, 0x7BEF);
-    renderer.drawText(saveBtn.x + 4, saveBtn.y + 1, "Save", 0x0000, 0x07E0);
+    renderer.drawText(editBtn.x + 4, editBtn.y + 1, "Edit", 0x0000, notepadBinary_ ? 0xC618 : 0x7BEF);
+    renderer.drawText(saveBtn.x + 4, saveBtn.y + 1, "Save", 0x0000, notepadBinary_ ? 0xC618 : 0x07E0);
     renderer.drawText(loadBtn.x + 4, loadBtn.y + 1, "Load", 0x0000, 0xFFE0);
+
+    const Rect pathBox{static_cast<int16_t>(body.x + 114), static_cast<int16_t>(body.y + 4), static_cast<int16_t>(body.w - 120), 10};
+    renderer.fillRect(pathBox, 0xEFFF);
+    renderer.drawRect(pathBox, 0x9CD3);
+    renderer.drawText(pathBox.x + 2, pathBox.y + 1, notepadPath_, 0x2104, 0xEFFF);
 
     const Rect textBox{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 18), static_cast<int16_t>(body.w - 12), static_cast<int16_t>(body.h - 24)};
     renderer.fillRect(textBox, 0xFFFF);
     renderer.drawRect(textBox, 0x9CD3);
-    renderer.drawText(textBox.x + 4, textBox.y + 4, notepadText_[0] ? notepadText_ : "(empty)", 0x2104, 0xFFFF);
+    if (notepadBinary_) {
+        renderer.drawText(textBox.x + 4, textBox.y + 4, "Binary file - read only", 0xF800, 0xFFFF);
+    } else {
+        renderer.drawText(textBox.x + 4, textBox.y + 4, notepadText_[0] ? notepadText_ : "(empty)", 0x2104, 0xFFFF);
+    }
 
     if (notepadDirty_) {
         renderer.drawText(static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 4), "*", 0xF800, 0xFFDF);
@@ -3435,18 +4717,66 @@ void WindowManager::renderDesktopConfig(Renderer& renderer, const Theme& t, cons
         renderer.fillRect({static_cast<int16_t>(cb.x + 3), static_cast<int16_t>(cb.y + 5), 3, 1}, 0x0000);
         renderer.fillRect({static_cast<int16_t>(cb.x + 5), static_cast<int16_t>(cb.y + 2), 1, 4}, 0x0000);
     }
-    renderer.drawText(static_cast<int16_t>(toggleRow.x + 12), static_cast<int16_t>(toggleRow.y + 2), "Afficher les icones", 0x0000, 0xE71C);
+    renderer.drawText(static_cast<int16_t>(toggleRow.x + 12), static_cast<int16_t>(toggleRow.y + 2), "Show desktop icons", 0x0000, 0xE71C);
 
-    for (uint8_t slot = 0; slot < kDesktopSlotCount; ++slot) {
-        const Rect row{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 34 + slot * 11), static_cast<int16_t>(body.w - 16), 10};
-        renderer.fillRect(row, 0xFFFF);
-        renderer.drawRect(row, 0x7BEF);
-        char line[44] = "";
-        snprintf(line, sizeof(line), "Case %u: %s", static_cast<unsigned>(slot + 1U), desktopKindLabel(desktopSlots_[slot]));
-        renderer.drawText(static_cast<int16_t>(row.x + 2), static_cast<int16_t>(row.y + 1), line, 0x0000, 0xFFFF);
+    const Rect presetBand{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 31), static_cast<int16_t>(body.w - 16), 11};
+    const int16_t presetW = static_cast<int16_t>(presetBand.w / kDesktopPresetCount);
+    for (uint8_t i = 0; i < kDesktopPresetCount; ++i) {
+        const Rect btn{static_cast<int16_t>(presetBand.x + i * presetW), presetBand.y, static_cast<int16_t>(i + 1U == kDesktopPresetCount ? presetBand.w - i * presetW : presetW),
+                       presetBand.h};
+        renderer.fillRect(btn, 0x39E7);
+        renderer.drawRect(btn, 0x7BEF);
+        renderer.drawText(static_cast<int16_t>(btn.x + 2), static_cast<int16_t>(btn.y + 2), kDesktopPresetLabels[i], 0x0000, 0x39E7);
     }
 
-    renderer.drawText(static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + body.h - 10), "Click row to cycle", 0x2104, 0xD6FA);
+    const Rect listRect{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 44), static_cast<int16_t>(body.w - 22), static_cast<int16_t>(body.h - 58)};
+    const Rect scrollUp{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + 44), 8, 10};
+    const Rect scrollDown{static_cast<int16_t>(body.x + body.w - 12), static_cast<int16_t>(body.y + body.h - 16), 8, 10};
+    renderer.fillRect(listRect, 0xEFFF);
+    renderer.drawRect(listRect, 0x7BEF);
+    renderer.fillRect(scrollUp, 0xBDF7);
+    renderer.fillRect(scrollDown, 0xBDF7);
+    renderer.drawText(static_cast<int16_t>(scrollUp.x + 1), static_cast<int16_t>(scrollUp.y + 1), "^", 0x0000, 0xBDF7);
+    renderer.drawText(static_cast<int16_t>(scrollDown.x + 1), static_cast<int16_t>(scrollDown.y + 1), "v", 0x0000, 0xBDF7);
+
+    int16_t visibleRows = static_cast<int16_t>(listRect.h / 10);
+    if (visibleRows < 1) visibleRows = 1;
+    if (visibleRows > static_cast<int16_t>(kDesktopSlotCount)) visibleRows = kDesktopSlotCount;
+    const uint8_t maxScroll = static_cast<uint8_t>(kDesktopSlotCount - visibleRows);
+    if (desktopConfigScroll_ > maxScroll) desktopConfigScroll_ = maxScroll;
+
+    for (int16_t row = 0; row < visibleRows; ++row) {
+        const uint8_t slot = static_cast<uint8_t>(desktopConfigScroll_ + row);
+        if (slot >= kDesktopSlotCount) break;
+        const Rect item{static_cast<int16_t>(listRect.x + 1), static_cast<int16_t>(listRect.y + row * 10), static_cast<int16_t>(listRect.w - 2), 9};
+        const uint16_t bg = (slot & 1U) ? 0xFFFF : 0xEF5D;
+        renderer.fillRect(item, bg);
+        char line[44] = "";
+        snprintf(line, sizeof(line), "Slot %u: %s", static_cast<unsigned>(slot + 1U), desktopKindLabel(desktopSlots_[slot]));
+        renderer.drawText(static_cast<int16_t>(item.x + 2), static_cast<int16_t>(item.y + 1), line, 0x0000, bg);
+    }
+
+    renderer.drawText(static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + body.h - 10), "Click rows or presets", 0x2104, 0xD6FA);
+}
+
+void WindowManager::renderReboot(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
+    (void)t;
+    const Rect body = windowBody(w);
+    if (clip && !intersects(*clip, body)) return;
+
+    renderer.fillRect(body, 0x2104);
+    renderer.fillRect({body.x + 2, static_cast<int16_t>(body.y + 2), static_cast<int16_t>(body.w - 4), 14}, 0xA000);
+    renderer.drawText(body.x + 6, body.y + 6, "Power control", 0xFFFF, 0xA000);
+
+    const char* rows[4] = {"Shutdown", "Restart", "Reboot to BIOS", "Reboot to Rescue BIOS"};
+    for (uint8_t i = 0; i < 4; ++i) {
+        const Rect row{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 22 + i * 14), static_cast<int16_t>(body.w - 16), 11};
+        renderer.fillRect(row, 0x39E7);
+        renderer.drawRect(row, 0xFFFF);
+        renderer.drawText(static_cast<int16_t>(row.x + 4), static_cast<int16_t>(row.y + 2), rows[i], 0x0000, 0x39E7);
+    }
+
+    renderer.drawText(static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + body.h - 10), "Click one action", 0xBDF7, 0x2104);
 }
 
 void WindowManager::renderAppHub(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
@@ -3464,78 +4794,121 @@ void WindowManager::renderAppHub(Renderer& renderer, const Theme& t, const Windo
 
     const Rect prevBtn{static_cast<int16_t>(body.x + body.w - 56), static_cast<int16_t>(body.y + 4), 12, 10};
     const Rect nextBtn{static_cast<int16_t>(body.x + body.w - 40), static_cast<int16_t>(body.y + 4), 12, 10};
+    const Rect searchBtn{static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 4), 18, 10};
     renderer.fillRect(prevBtn, 0x39E7);
     renderer.fillRect(nextBtn, 0x39E7);
+    renderer.fillRect(searchBtn, appHubSearchKeyboardOpen_ ? 0xFFE0 : 0x9CF3);
     renderer.drawText(prevBtn.x + 4, prevBtn.y + 1, "<", 0x0000, 0x39E7);
     renderer.drawText(nextBtn.x + 4, nextBtn.y + 1, ">", 0x0000, 0x39E7);
+    renderer.drawText(searchBtn.x + 3, searchBtn.y + 1, "F", 0x0000, appHubSearchKeyboardOpen_ ? 0xFFE0 : 0x9CF3);
 
     char pageLine[20] = "";
     snprintf(pageLine, sizeof(pageLine), "%u/%u", static_cast<unsigned>(appHubPage_ + 1U), static_cast<unsigned>(totalPages == 0 ? 1 : totalPages));
     renderer.drawText(static_cast<int16_t>(body.x + body.w - 84), static_cast<int16_t>(body.y + 6), pageLine, 0xFFFF, 0x5AEB);
 
-    const int16_t gridX = static_cast<int16_t>(body.x + 8);
-    const int16_t gridY = static_cast<int16_t>(body.y + 22);
-    const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
-
-    for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
-        const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
-        if (idx >= kHubEntryCount) break;
-        const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
-        const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
-        const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
-        const bool sel = idx == appHubSelected_;
-        const uint16_t bg = sel ? 0x7D7C : 0xE79D;
-        renderer.fillRect(card, bg);
-        renderer.drawRect(card, sel ? 0xFFFF : 0x94B2);
-
-        const Rect icon{static_cast<int16_t>(card.x + 4), static_cast<int16_t>(card.y + 5), 14, 14};
-        renderer.fillRect(icon, 0x1082);
-        renderer.drawRect(icon, 0xFFFF);
-
-        const uint8_t accent = kHubEntries[idx].accent;
-        if (accent == 1) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 2), 2, 10}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 6), 10, 2}, 0xFFFF);
-        } else if (accent == 2) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 9), 2, 3}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 7), static_cast<int16_t>(icon.y + 7), 2, 5}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 11), static_cast<int16_t>(icon.y + 4), 1, 8}, 0xFFFF);
-        } else if (accent == 3) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 4), 10, 7}, 0xFFE0);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 3), 4, 1}, 0xFFE0);
-        } else if (accent == 4) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 4), static_cast<int16_t>(icon.y + 4), 6, 6}, 0x39E7);
-        } else if (accent == 5) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 11), 10, 1}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 4), static_cast<int16_t>(icon.y + 8), 6, 1}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 5), 2, 1}, 0xFFFF);
-        } else if (accent == 6) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 2}, 0xFFE0);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 6), 8, 2}, 0x07FF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 10), 9, 2}, 0x07E0);
-        } else if (accent == 7) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 4), 8, 1}, 0x3186);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 7), 8, 1}, 0x3186);
-        } else if (accent == 8) {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0x07E0);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 7), static_cast<int16_t>(icon.y + 7), 3, 3}, 0xF800);
-        } else if (accent == 9) {
-            renderer.drawRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 6), 2, 2}, 0xFFE0);
-        } else {
-            renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 3), 10, 8}, 0xFFFF);
-            renderer.fillRect({static_cast<int16_t>(icon.x + 5), static_cast<int16_t>(icon.y + 2), 4, 1}, 0xFFFF);
-        }
-
-        renderer.drawText(static_cast<int16_t>(card.x + 22), static_cast<int16_t>(card.y + 10), kHubEntries[idx].label, sel ? 0xFFFF : 0x2104, bg);
+    const Rect searchBox{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 20), static_cast<int16_t>(body.w - 16), 12};
+    renderer.fillRect(searchBox, 0xFFFF);
+    renderer.drawRect(searchBox, 0x7BEF);
+    if (globalSearchQuery_[0]) {
+        renderer.drawText(static_cast<int16_t>(searchBox.x + 2), static_cast<int16_t>(searchBox.y + 2), globalSearchQuery_, 0x2104, 0xFFFF);
+    } else {
+        renderer.drawText(static_cast<int16_t>(searchBox.x + 2), static_cast<int16_t>(searchBox.y + 2), "Search apps/files/power", 0x8410, 0xFFFF);
     }
+
+    const bool searchActive = globalSearchQuery_[0] != '\0';
+    if (searchActive) {
+        const Rect listRect{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 36), static_cast<int16_t>(body.w - 16), static_cast<int16_t>(body.h - 42)};
+        renderer.fillRect(listRect, 0xEFFF);
+        renderer.drawRect(listRect, 0x9CD3);
+
+        if (globalSearchCount_ == 0) {
+            renderer.drawText(static_cast<int16_t>(listRect.x + 4), static_cast<int16_t>(listRect.y + 3), "No result", 0x8410, 0xEFFF);
+        } else {
+            const int16_t rowH = 12;
+            for (uint8_t i = 0; i < globalSearchCount_; ++i) {
+                const Rect row{static_cast<int16_t>(listRect.x + 1), static_cast<int16_t>(listRect.y + i * rowH), static_cast<int16_t>(listRect.w - 2), rowH - 1};
+                const bool sel = i == globalSearchSelected_;
+                const uint16_t bg = sel ? 0x5AEB : 0xEFFF;
+                const uint16_t fg = sel ? 0xFFFF : 0x2104;
+                renderer.fillRect(row, bg);
+                const char* typeLabel = globalSearchResults_[i].type == 0 ? "APP" : (globalSearchResults_[i].type == 1 ? "FILE" : "PWR");
+                renderer.drawText(static_cast<int16_t>(row.x + 2), static_cast<int16_t>(row.y + 2), typeLabel, fg, bg);
+                renderer.drawText(static_cast<int16_t>(row.x + 24), static_cast<int16_t>(row.y + 2), globalSearchResults_[i].label, fg, bg);
+            }
+        }
+    } else {
+        const int16_t gridX = static_cast<int16_t>(body.x + 8);
+        const int16_t gridY = static_cast<int16_t>(body.y + 36);
+        const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
+
+        for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
+            const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
+            if (idx >= kHubEntryCount) break;
+            const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
+            const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
+            const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
+            const bool sel = idx == appHubSelected_;
+            const uint16_t bg = sel ? 0x7D7C : 0xE79D;
+            renderer.fillRect(card, bg);
+            renderer.drawRect(card, sel ? 0xFFFF : 0x94B2);
+
+            const Rect icon{static_cast<int16_t>(card.x + 4), static_cast<int16_t>(card.y + 5), 14, 14};
+            renderer.fillRect(icon, 0x1082);
+            renderer.drawRect(icon, 0xFFFF);
+
+            const uint8_t accent = kHubEntries[idx].accent;
+            if (accent == 1) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 2), 2, 10}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 6), 10, 2}, 0xFFFF);
+            } else if (accent == 2) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 9), 2, 3}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 7), static_cast<int16_t>(icon.y + 7), 2, 5}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 11), static_cast<int16_t>(icon.y + 4), 1, 8}, 0xFFFF);
+            } else if (accent == 3) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 4), 10, 7}, 0xFFE0);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 3), 4, 1}, 0xFFE0);
+            } else if (accent == 4) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 4), static_cast<int16_t>(icon.y + 4), 6, 6}, 0x39E7);
+            } else if (accent == 5) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 11), 10, 1}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 4), static_cast<int16_t>(icon.y + 8), 6, 1}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 5), 2, 1}, 0xFFFF);
+            } else if (accent == 6) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 2}, 0xFFE0);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 6), 8, 2}, 0x07FF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 10), 9, 2}, 0x07E0);
+            } else if (accent == 7) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 4), 8, 1}, 0x3186);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 3), static_cast<int16_t>(icon.y + 7), 8, 1}, 0x3186);
+            } else if (accent == 8) {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0x07E0);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 7), static_cast<int16_t>(icon.y + 7), 3, 3}, 0xF800);
+            } else if (accent == 9) {
+                renderer.drawRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 2), 10, 10}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 6), static_cast<int16_t>(icon.y + 6), 2, 2}, 0xFFE0);
+            } else {
+                renderer.fillRect({static_cast<int16_t>(icon.x + 2), static_cast<int16_t>(icon.y + 3), 10, 8}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(icon.x + 5), static_cast<int16_t>(icon.y + 2), 4, 1}, 0xFFFF);
+            }
+
+            renderer.drawText(static_cast<int16_t>(card.x + 22), static_cast<int16_t>(card.y + 10), kHubEntries[idx].label, sel ? 0xFFFF : 0x2104, bg);
+        }
+    }
+
+    if (appHubSearchKeyboardOpen_ && keyboard_.isOpen()) {
+        const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+        keyboard_.render(renderer, keyRect, darkTheme_, cursorX_, cursorY_);
+    }
+
+    (void)t;
 }
 
 void WindowManager::renderGamePixel(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
     const Rect body = windowBody(w);
-    if (clip && !intersects(*clip, body)) return;
+    Rect bodyPaint = body;
+    if (clip && !clipRectTo(body, *clip, bodyPaint)) return;
 
     const int16_t gridW = 15;
     const int16_t gridH = 9;
@@ -3549,45 +4922,76 @@ void WindowManager::renderGamePixel(Renderer& renderer, const Theme& t, const Wi
     const int16_t arenaH = static_cast<int16_t>(gridH * cell);
     const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
 
-    renderer.fillRect(body, 0x1082);
-    renderer.drawText(body.x + 6, body.y + 6, "Pixel Snake", 0xFFFF, 0x1082);
+    renderer.fillRect(bodyPaint, 0x1082);
+
+    const Rect titleRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 6), 66, 8};
+    if (!clip || intersects(*clip, titleRect)) {
+        renderer.drawText(body.x + 6, body.y + 6, "Pixel Snake", 0xFFFF, 0x1082);
+    }
+
     char line[20] = "";
     snprintf(line, sizeof(line), "Score %u", static_cast<unsigned>(gamePixelScore_));
-    renderer.drawText(static_cast<int16_t>(body.x + body.w - 58), body.y + 6, line, 0xFFFF, 0x1082);
+    const Rect scoreRect{static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + 6), 56, 8};
+    if (!clip || intersects(*clip, scoreRect)) {
+        renderer.fillRect(scoreRect, 0x1082);
+        renderer.drawText(static_cast<int16_t>(body.x + body.w - 58), body.y + 6, line, 0xFFFF, 0x1082);
+    }
 
-    renderer.fillRect(arena, 0x0000);
-    renderer.drawRect(arena, 0x7BEF);
+    Rect arenaPaint = arena;
+    if (!clip || clipRectTo(arena, *clip, arenaPaint)) {
+        renderer.fillRect(arenaPaint, 0x0000);
+    }
+    if (!clip || intersects(*clip, arena)) {
+        renderer.drawRect(arena, 0x7BEF);
+    }
 
     const int16_t foodPad = cell > 4 ? static_cast<int16_t>(cell / 4) : 1;
     const int16_t snakePad = cell > 3 ? static_cast<int16_t>(cell / 6) : 1;
     const int16_t foodSize = static_cast<int16_t>(cell - foodPad * 2);
     const int16_t snakeSize = static_cast<int16_t>(cell - snakePad * 2);
 
-    renderer.fillRect({static_cast<int16_t>(arena.x + gamePixelFoodX_ * cell + foodPad), static_cast<int16_t>(arena.y + gamePixelFoodY_ * cell + foodPad), foodSize, foodSize}, 0xF800);
-    renderer.fillRect({static_cast<int16_t>(arena.x + gamePixelX_ * cell + snakePad), static_cast<int16_t>(arena.y + gamePixelY_ * cell + snakePad), snakeSize, snakeSize}, 0x07E0);
+    const Rect foodRect{static_cast<int16_t>(arena.x + gamePixelFoodX_ * cell + foodPad), static_cast<int16_t>(arena.y + gamePixelFoodY_ * cell + foodPad), foodSize, foodSize};
+    if (!clip || intersects(*clip, foodRect)) {
+        renderer.fillRect(foodRect, 0xF800);
+    }
 
-    if (gameCloseHintVisible_) {
-        renderer.fillRect({8, 4, 140, 10}, 0x18C3);
+    const Rect snakeRect{static_cast<int16_t>(arena.x + gamePixelX_ * cell + snakePad), static_cast<int16_t>(arena.y + gamePixelY_ * cell + snakePad), snakeSize, snakeSize};
+    if (!clip || intersects(*clip, snakeRect)) {
+        renderer.fillRect(snakeRect, 0x07E0);
+    }
+
+    const Rect closeHintRect{8, 4, 140, 10};
+    if (gameCloseHintVisible_ && (!clip || intersects(*clip, closeHintRect))) {
+        renderer.fillRect(closeHintRect, 0x18C3);
         renderer.drawText(10, 5, "Hold BtnA 2s to close", 0xFFFF, 0x18C3);
     }
-    if (gameCloseProgressMs_ > 0) {
+
+    const Rect closeBarRect{8, 16, 122, 7};
+    if (gameCloseProgressMs_ > 0 && (!clip || intersects(*clip, closeBarRect))) {
         const int16_t barW = static_cast<int16_t>((120 * gameCloseProgressMs_) / 2000U);
-        renderer.fillRect({8, 16, 122, 7}, 0x0000);
-        renderer.drawRect({8, 16, 122, 7}, 0xBDF7);
+        renderer.fillRect(closeBarRect, 0x0000);
+        renderer.drawRect(closeBarRect, 0xBDF7);
         renderer.fillRect({9, 17, barW, 5}, 0xF800);
     }
 
     if (gamePixelOver_) {
-        renderer.fillRect({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 10}, 0xF800);
-        renderer.drawText(static_cast<int16_t>(body.x + body.w - 54), static_cast<int16_t>(body.y + body.h - 26), "Game over", 0xFFFF, 0xF800);
-        renderer.fillRect({static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + body.h - 14), 46, 10}, 0xFFE0);
-        renderer.drawText(static_cast<int16_t>(body.x + body.w - 48), static_cast<int16_t>(body.y + body.h - 12), "Reset", 0x0000, 0xFFE0);
+        const Rect overRect{static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 10};
+        const Rect resetRect{static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + body.h - 14), 46, 10};
+        if (!clip || intersects(*clip, overRect)) {
+            renderer.fillRect(overRect, 0xF800);
+            renderer.drawText(static_cast<int16_t>(body.x + body.w - 54), static_cast<int16_t>(body.y + body.h - 26), "Game over", 0xFFFF, 0xF800);
+        }
+        if (!clip || intersects(*clip, resetRect)) {
+            renderer.fillRect(resetRect, 0xFFE0);
+            renderer.drawText(static_cast<int16_t>(body.x + body.w - 48), static_cast<int16_t>(body.y + body.h - 12), "Reset", 0x0000, 0xFFE0);
+        }
     }
 }
 
 void WindowManager::renderGameOrbit(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
     const Rect body = windowBody(w);
-    if (clip && !intersects(*clip, body)) return;
+    Rect bodyPaint = body;
+    if (clip && !clipRectTo(body, *clip, bodyPaint)) return;
 
     const int16_t logicalW = 120;
     const int16_t logicalH = 72;
@@ -3601,45 +5005,223 @@ void WindowManager::renderGameOrbit(Renderer& renderer, const Theme& t, const Wi
     const int16_t arenaH = static_cast<int16_t>(logicalH * scale);
     const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
 
-    renderer.fillRect(body, 0x18C3);
-    renderer.drawText(body.x + 6, body.y + 6, "Orbit Pong", 0xFFFF, 0x18C3);
+    renderer.fillRect(bodyPaint, 0x18C3);
+
+    const Rect titleRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 6), 66, 8};
+    if (!clip || intersects(*clip, titleRect)) {
+        renderer.drawText(body.x + 6, body.y + 6, "Orbit Pong", 0xFFFF, 0x18C3);
+    }
+
     char line[20] = "";
     snprintf(line, sizeof(line), "Score %u", static_cast<unsigned>(orbitScore_));
-    renderer.drawText(static_cast<int16_t>(body.x + body.w - 58), body.y + 6, line, 0xFFFF, 0x18C3);
+    const Rect scoreRect{static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + 6), 56, 8};
+    if (!clip || intersects(*clip, scoreRect)) {
+        renderer.fillRect(scoreRect, 0x18C3);
+        renderer.drawText(static_cast<int16_t>(body.x + body.w - 58), body.y + 6, line, 0xFFFF, 0x18C3);
+    }
 
-    renderer.fillRect(arena, 0x0000);
-    renderer.drawRect(arena, 0x7BEF);
+    Rect arenaPaint = arena;
+    if (!clip || clipRectTo(arena, *clip, arenaPaint)) {
+        renderer.fillRect(arenaPaint, 0x0000);
+    }
+    if (!clip || intersects(*clip, arena)) {
+        renderer.drawRect(arena, 0x7BEF);
+    }
 
     const int16_t paddleX = static_cast<int16_t>(arena.x + orbitPaddleX_ * scale);
     const int16_t paddleY = static_cast<int16_t>(arena.y + 68 * scale);
     const int16_t paddleW = static_cast<int16_t>(24 * scale);
     int16_t paddleH = static_cast<int16_t>(3 * scale);
     if (paddleH < 2) paddleH = 2;
-    renderer.fillRect({paddleX, paddleY, paddleW, paddleH}, 0x07E0);
+    const Rect paddleRect{paddleX, paddleY, paddleW, paddleH};
+    if (!clip || intersects(*clip, paddleRect)) {
+        renderer.fillRect(paddleRect, 0x07E0);
+    }
 
     const int16_t ballX = static_cast<int16_t>(arena.x + orbitBallX_ * scale);
     const int16_t ballY = static_cast<int16_t>(arena.y + orbitBallY_ * scale);
     int16_t ballS = static_cast<int16_t>(6 * scale);
     if (ballS < 4) ballS = 4;
-    renderer.fillRect({ballX, ballY, ballS, ballS}, 0xFFE0);
+    const Rect ballRect{ballX, ballY, ballS, ballS};
+    if (!clip || intersects(*clip, ballRect)) {
+        renderer.fillRect(ballRect, 0xFFE0);
+    }
 
-    if (gameCloseHintVisible_) {
-        renderer.fillRect({8, 4, 140, 10}, 0x18C3);
+    const Rect closeHintRect{8, 4, 140, 10};
+    if (gameCloseHintVisible_ && (!clip || intersects(*clip, closeHintRect))) {
+        renderer.fillRect(closeHintRect, 0x18C3);
         renderer.drawText(10, 5, "Hold BtnA 2s to close", 0xFFFF, 0x18C3);
     }
-    if (gameCloseProgressMs_ > 0) {
+
+    const Rect closeBarRect{8, 16, 122, 7};
+    if (gameCloseProgressMs_ > 0 && (!clip || intersects(*clip, closeBarRect))) {
         const int16_t barW = static_cast<int16_t>((120 * gameCloseProgressMs_) / 2000U);
-        renderer.fillRect({8, 16, 122, 7}, 0x0000);
-        renderer.drawRect({8, 16, 122, 7}, 0xBDF7);
+        renderer.fillRect(closeBarRect, 0x0000);
+        renderer.drawRect(closeBarRect, 0xBDF7);
         renderer.fillRect({9, 17, barW, 5}, 0xF800);
     }
 
     if (orbitOver_) {
-        renderer.fillRect({static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 10}, 0xF800);
-        renderer.drawText(static_cast<int16_t>(body.x + body.w - 54), static_cast<int16_t>(body.y + body.h - 26), "Game over", 0xFFFF, 0xF800);
-        renderer.fillRect({static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + body.h - 14), 46, 10}, 0xFFE0);
-        renderer.drawText(static_cast<int16_t>(body.x + body.w - 48), static_cast<int16_t>(body.y + body.h - 12), "Reset", 0x0000, 0xFFE0);
+        const Rect overRect{static_cast<int16_t>(body.x + body.w - 58), static_cast<int16_t>(body.y + body.h - 28), 52, 10};
+        const Rect resetRect{static_cast<int16_t>(body.x + body.w - 52), static_cast<int16_t>(body.y + body.h - 14), 46, 10};
+        if (!clip || intersects(*clip, overRect)) {
+            renderer.fillRect(overRect, 0xF800);
+            renderer.drawText(static_cast<int16_t>(body.x + body.w - 54), static_cast<int16_t>(body.y + body.h - 26), "Game over", 0xFFFF, 0xF800);
+        }
+        if (!clip || intersects(*clip, resetRect)) {
+            renderer.fillRect(resetRect, 0xFFE0);
+            renderer.drawText(static_cast<int16_t>(body.x + body.w - 48), static_cast<int16_t>(body.y + body.h - 12), "Reset", 0x0000, 0xFFE0);
+        }
     }
+}
+
+void WindowManager::renderGamePlinko(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
+    const Rect body = windowBody(w);
+    Rect bodyPaint = body;
+    if (clip && !clipRectTo(body, *clip, bodyPaint)) return;
+
+    const int16_t logicalW = 120;
+    const int16_t logicalH = 78;
+    const int16_t topPad = 18;
+    int16_t scale = static_cast<int16_t>((body.h - topPad - 12) / logicalH);
+    const int16_t scaleByWidth = static_cast<int16_t>((body.w - 10) / logicalW);
+    if (scaleByWidth < scale) scale = scaleByWidth;
+    if (scale < 1) scale = 1;
+
+    const int16_t arenaW = static_cast<int16_t>(logicalW * scale);
+    const int16_t arenaH = static_cast<int16_t>(logicalH * scale);
+    const Rect arena{static_cast<int16_t>(body.x + (body.w - arenaW) / 2), static_cast<int16_t>(body.y + topPad), arenaW, arenaH};
+
+    renderer.fillRect(bodyPaint, 0x0841);
+
+    const Rect titleRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 6), 46, 8};
+    if (!clip || intersects(*clip, titleRect)) {
+        renderer.drawText(body.x + 6, body.y + 6, "Plinko", 0xFFFF, 0x0841);
+    }
+
+    char line[20] = "";
+    snprintf(line, sizeof(line), "Score %u", static_cast<unsigned>(plinkoScore_));
+    const Rect scoreRect{static_cast<int16_t>(body.x + body.w - 66), static_cast<int16_t>(body.y + 6), 64, 8};
+    if (!clip || intersects(*clip, scoreRect)) {
+        renderer.fillRect(scoreRect, 0x0841);
+        renderer.drawText(scoreRect.x, scoreRect.y, line, 0xFFFF, 0x0841);
+    }
+
+    snprintf(line, sizeof(line), "Best %u", static_cast<unsigned>(plinkoBestDrop_));
+    const Rect bestRect{static_cast<int16_t>(body.x + body.w - 66), static_cast<int16_t>(body.y + 15), 64, 8};
+    if (!clip || intersects(*clip, bestRect)) {
+        renderer.fillRect(bestRect, 0x0841);
+        renderer.drawText(bestRect.x, bestRect.y, line, 0xBDF7, 0x0841);
+    }
+
+    const Rect infoRect{static_cast<int16_t>(body.x + 54), static_cast<int16_t>(body.y + 6), 60, 8};
+    if (!clip || intersects(*clip, infoRect)) {
+        renderer.fillRect(infoRect, 0x0841);
+        if (plinkoLastScored_) {
+            snprintf(line, sizeof(line), "x%u +", static_cast<unsigned>(plinkoLastMult_));
+            renderer.drawText(infoRect.x, infoRect.y, line, 0xFFE0, 0x0841);
+        } else {
+            const char* modeLabel = plinkoMode_ == 0 ? "Normal" : (plinkoMode_ == 1 ? "Hard" : "Chaos");
+            renderer.drawText(infoRect.x, infoRect.y, modeLabel, 0x9CD3, 0x0841);
+        }
+    }
+
+    Rect arenaPaint = arena;
+    if (!clip || clipRectTo(arena, *clip, arenaPaint)) {
+        renderer.fillRect(arenaPaint, 0x0000);
+    }
+    if (!clip || intersects(*clip, arena)) {
+        renderer.drawRect(arena, 0x52AA);
+    }
+
+    const uint8_t pegRows = plinkoMode_ == 1 ? 8 : 7;
+    const uint8_t pegCols = plinkoMode_ == 1 ? 9 : 8;
+    const int16_t pegStepY = plinkoMode_ == 1 ? 7 : 8;
+    const int16_t pegStepX = plinkoMode_ == 1 ? 12 : 14;
+    const int16_t pegShift = plinkoMode_ == 1 ? 6 : 7;
+    for (uint8_t row = 0; row < pegRows; ++row) {
+        const int16_t pegY = static_cast<int16_t>(10 + row * pegStepY);
+        const int16_t shift = (row & 1U) ? 0 : pegShift;
+        for (uint8_t col = 0; col < pegCols; ++col) {
+            const int16_t pegX = static_cast<int16_t>(8 + col * pegStepX + shift);
+            if (pegX > 116) continue;
+            const int16_t px = static_cast<int16_t>(arena.x + pegX * scale);
+            const int16_t py = static_cast<int16_t>(arena.y + pegY * scale);
+            int16_t pegSize = static_cast<int16_t>(2 * scale);
+            if (pegSize < 2) pegSize = 2;
+            const Rect pegRect{px, py, pegSize, pegSize};
+            if (!clip || intersects(*clip, pegRect)) {
+                renderer.fillRect(pegRect, plinkoMode_ == 2 ? 0xFD20 : 0xB596);
+            }
+        }
+    }
+
+    const int16_t binY = static_cast<int16_t>(arena.y + 70 * scale);
+    if (!clip || intersects(*clip, {arena.x, binY, arena.w, static_cast<int16_t>(arena.y + arena.h - binY)})) {
+        for (uint8_t i = 0; i <= 8; ++i) {
+            const int16_t x = static_cast<int16_t>(arena.x + i * 15 * scale);
+            renderer.fillRect({x, binY, 1, static_cast<int16_t>(arena.y + arena.h - binY)}, 0x39E7);
+        }
+        static const uint8_t kMultNormal[8] = {8, 4, 2, 1, 1, 2, 4, 8};
+        static const uint8_t kMultHard[8] = {12, 6, 3, 1, 1, 3, 6, 12};
+        static const uint8_t kMultChaos[8] = {16, 2, 10, 1, 1, 10, 2, 16};
+        const uint8_t* multTable = kMultNormal;
+        if (plinkoMode_ == 1) multTable = kMultHard;
+        else if (plinkoMode_ == 2) multTable = kMultChaos;
+        for (uint8_t i = 0; i < 8; ++i) {
+            char multLabel[5] = "";
+            snprintf(multLabel, sizeof(multLabel), "x%u", static_cast<unsigned>(multTable[i]));
+            const int16_t tx = static_cast<int16_t>(arena.x + i * 15 * scale + 2);
+            const uint16_t textColor = multTable[i] >= 10 ? 0xFFE0 : 0x7BEF;
+            renderer.drawText(tx, static_cast<int16_t>(binY + 2), multLabel, textColor, 0x0000);
+        }
+    }
+
+    int16_t ballX = static_cast<int16_t>(plinkoBallX16_ / 16);
+    int16_t ballY = static_cast<int16_t>(plinkoBallY16_ / 16);
+    if (!plinkoBallActive_) {
+        ballY = 6;
+    }
+    const int16_t ballPx = static_cast<int16_t>(arena.x + ballX * scale);
+    const int16_t ballPy = static_cast<int16_t>(arena.y + ballY * scale);
+    int16_t ballS = static_cast<int16_t>(5 * scale);
+    if (ballS < 4) ballS = 4;
+    const Rect ballRect{ballPx, ballPy, ballS, ballS};
+    if (!clip || intersects(*clip, ballRect)) {
+        const uint16_t ballColor = plinkoMode_ == 1 ? 0xFB80 : (plinkoMode_ == 2 ? 0x07FF : 0xFFE0);
+        renderer.fillRect(ballRect, ballColor);
+        renderer.drawRect(ballRect, 0xFFFF);
+    }
+
+    const Rect dropRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 14), 44, 10};
+    if (!clip || intersects(*clip, dropRect)) {
+        renderer.fillRect(dropRect, 0x07A8);
+        renderer.drawText(static_cast<int16_t>(dropRect.x + 4), static_cast<int16_t>(dropRect.y + 2), "Reset", 0xFFFF, 0x07A8);
+    }
+
+    const Rect modeRect{static_cast<int16_t>(body.x + 54), static_cast<int16_t>(body.y + body.h - 14), 56, 10};
+    if (!clip || intersects(*clip, modeRect)) {
+        const uint16_t modeBg = plinkoMode_ == 0 ? 0x39C7 : (plinkoMode_ == 1 ? 0xF920 : 0x05FA);
+        const char* modeShort = plinkoMode_ == 0 ? "Mode N" : (plinkoMode_ == 1 ? "Mode H" : "Mode C");
+        renderer.fillRect(modeRect, modeBg);
+        renderer.drawText(static_cast<int16_t>(modeRect.x + 4), static_cast<int16_t>(modeRect.y + 2), modeShort, 0xFFFF, modeBg);
+    }
+
+    const Rect closeHintRect{8, 4, 140, 10};
+    if (gameCloseHintVisible_ && (!clip || intersects(*clip, closeHintRect))) {
+        renderer.fillRect(closeHintRect, 0x18C3);
+        renderer.drawText(10, 5, "Hold BtnA 2s to close", 0xFFFF, 0x18C3);
+    }
+
+    const Rect closeBarRect{8, 16, 122, 7};
+    if (gameCloseProgressMs_ > 0 && (!clip || intersects(*clip, closeBarRect))) {
+        const int16_t barW = static_cast<int16_t>((120 * gameCloseProgressMs_) / 2000U);
+        renderer.fillRect(closeBarRect, 0x0000);
+        renderer.drawRect(closeBarRect, 0xBDF7);
+        renderer.fillRect({9, 17, barW, 5}, 0xF800);
+    }
+
+    (void)t;
 }
 
 bool WindowManager::isCoveredByTopWindow(const Rect& rect, uint8_t zIndex) const {
@@ -3649,6 +5231,107 @@ bool WindowManager::isCoveredByTopWindow(const Rect& rect, uint8_t zIndex) const
         if (top.x <= rect.x && top.y <= rect.y && top.x + top.width >= rect.x + rect.w && top.y + top.height >= rect.y + rect.h) {
             return true;
         }
+    }
+    return false;
+}
+
+bool WindowManager::globalSearchContainsFold(const char* text, const char* needle) const {
+    if (!needle || !needle[0]) return true;
+    if (!text || !text[0]) return false;
+    const size_t textLen = strlen(text);
+    const size_t needleLen = strlen(needle);
+    if (needleLen > textLen) return false;
+    for (size_t i = 0; i + needleLen <= textLen; ++i) {
+        bool ok = true;
+        for (size_t j = 0; j < needleLen; ++j) {
+            const char a = static_cast<char>(tolower(text[i + j]));
+            const char b = static_cast<char>(tolower(needle[j]));
+            if (a != b) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
+void WindowManager::globalSearchAddResult(uint8_t type, const char* label, const char* value, WindowKind kind, int32_t actionData) {
+    if (globalSearchCount_ >= kGlobalSearchResultMax) return;
+    for (uint8_t i = 0; i < globalSearchCount_; ++i) {
+        if (globalSearchResults_[i].type != type) continue;
+        if (strncmp(globalSearchResults_[i].label, label ? label : "", sizeof(globalSearchResults_[i].label)) == 0 &&
+            strncmp(globalSearchResults_[i].value, value ? value : "", sizeof(globalSearchResults_[i].value)) == 0) {
+            return;
+        }
+    }
+    GlobalSearchResult& r = globalSearchResults_[globalSearchCount_++];
+    r.type = type;
+    r.kind = kind;
+    r.actionData = actionData;
+    strlcpy(r.label, label ? label : "", sizeof(r.label));
+    strlcpy(r.value, value ? value : "", sizeof(r.value));
+}
+
+void WindowManager::globalSearchRebuild() {
+    globalSearchCount_ = 0;
+    globalSearchSelected_ = 0;
+    if (!globalSearchQuery_[0]) return;
+
+    for (uint8_t i = 0; i < kHubEntryCount; ++i) {
+        if (globalSearchContainsFold(kHubEntries[i].label, globalSearchQuery_)) {
+            globalSearchAddResult(0, kHubEntries[i].label, kHubEntries[i].label, kHubEntries[i].kind, 0);
+        }
+    }
+
+    struct PowerSearchEntry {
+        const char* label;
+        int32_t code;
+    };
+    static const PowerSearchEntry powerEntries[] = {
+        {"Shutdown", 0},
+        {"Restart", 1},
+        {"Reboot to BIOS", 4},
+        {"Reboot to Rescue BIOS", 5}
+    };
+    for (uint8_t i = 0; i < 4; ++i) {
+        if (globalSearchContainsFold(powerEntries[i].label, globalSearchQuery_)) {
+            globalSearchAddResult(2, powerEntries[i].label, powerEntries[i].label, WindowKind::Generic, powerEntries[i].code);
+        }
+    }
+
+    File root = SPIFFS.open("/");
+    if (root && root.isDirectory()) {
+        File entry = root.openNextFile();
+        while (entry && globalSearchCount_ < kGlobalSearchResultMax) {
+            const char* full = entry.name();
+            char label[36] = "";
+            if (full && full[0]) {
+                const char* base = strrchr(full, '/');
+                base = base ? base + 1 : full;
+                if (globalSearchContainsFold(base, globalSearchQuery_) || globalSearchContainsFold(full, globalSearchQuery_)) {
+                    copyTrim(label, sizeof(label), base, 32);
+                    globalSearchAddResult(1, label, full, WindowKind::Notepad, 0);
+                }
+            }
+            entry.close();
+            entry = root.openNextFile();
+        }
+        root.close();
+    }
+}
+
+bool WindowManager::globalSearchLaunchResult(const GlobalSearchResult& result) {
+    if (result.type == 0) {
+        return createKindWindow(result.kind) >= 0;
+    }
+    if (result.type == 1) {
+        explorerOpenFile(result.value);
+        return true;
+    }
+    if (result.type == 2) {
+        emit(katux::core::EventType::ShutdownRequest, result.actionData, 0);
+        return true;
     }
     return false;
 }
@@ -3663,9 +5346,12 @@ int8_t WindowManager::createKindWindow(WindowKind kind) {
     if (kind == WindowKind::WifiManager) return createWindow("WiFi Manager", 12, 6, 216, 124, true, kind);
     if (kind == WindowKind::Browser) return createWindow("Navigator", 10, 6, 220, 124, true, kind);
     if (kind == WindowKind::ImageVisualizer) return createWindow("Image visualizer", 14, 8, 212, 122, true, kind);
+    if (kind == WindowKind::DateTime) return createWindow("Date and Time", 14, 8, 212, 122, true, kind);
     if (kind == WindowKind::DesktopConfig) return createWindow("Desktop", 14, 8, 212, 122, true, kind);
+    if (kind == WindowKind::Reboot) return createWindow("Reboot", 22, 12, 196, 104, true, kind);
     if (kind == WindowKind::GamePixel) return createWindow("Pixel Snake", 22, 8, 196, 120, true, kind);
     if (kind == WindowKind::GameOrbit) return createWindow("Orbit Pong", 22, 8, 196, 120, true, kind);
+    if (kind == WindowKind::GamePlinko) return createWindow("Plinko Rush", 22, 8, 196, 120, true, kind);
     if (kind == WindowKind::AppHub) return createWindow("Applications", 12, 8, 216, 120, true, kind);
     return createWindow("Window", 24, 10, 184, 112, true, kind);
 }
@@ -3755,12 +5441,33 @@ void WindowManager::updateHover(int16_t cursorX, int16_t cursorY) {
             (notepadKeyboardOpen_ && keyboard_.isOpen() && cursorY >= body.y + body.h - 62)) {
             hoverInput_ = true;
         }
+    } else if (w.kind == WindowKind::Explorer) {
+        const Rect body = windowBody(w);
+        const Rect bar{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 26), static_cast<int16_t>(body.w - 12), 10};
+        const Rect list{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 38), static_cast<int16_t>(body.w - 20), static_cast<int16_t>(body.h - 44)};
+        if ((cursorX >= bar.x && cursorY >= bar.y && cursorX < bar.x + bar.w && cursorY < bar.y + bar.h) ||
+            (cursorX >= list.x && cursorY >= list.y && cursorX < list.x + list.w && cursorY < list.y + list.h) ||
+            (explorerKeyboardOpen_ && keyboard_.isOpen() && cursorY >= body.y + body.h - 62)) {
+            hoverInput_ = true;
+        }
     } else if (w.kind == WindowKind::Settings) {
         const Rect body = windowBody(w);
         const Rect leftArrow{static_cast<int16_t>(body.x + body.w - 62), static_cast<int16_t>(body.y + 4), 12, 10};
         const Rect rightArrow{static_cast<int16_t>(body.x + body.w - 46), static_cast<int16_t>(body.y + 4), 12, 10};
         if ((cursorX >= leftArrow.x && cursorY >= leftArrow.y && cursorX < leftArrow.x + leftArrow.w && cursorY < leftArrow.y + leftArrow.h) ||
             (cursorX >= rightArrow.x && cursorY >= rightArrow.y && cursorX < rightArrow.x + rightArrow.w && cursorY < rightArrow.y + rightArrow.h)) {
+            hoverInput_ = true;
+        }
+    } else if (w.kind == WindowKind::DateTime) {
+        const Rect body = windowBody(w);
+        const Rect list{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + 38), static_cast<int16_t>(body.w - 12), 84};
+        if (cursorX >= list.x && cursorY >= list.y && cursorX < list.x + list.w && cursorY < list.y + list.h) {
+            hoverInput_ = true;
+        }
+    } else if (w.kind == WindowKind::Reboot) {
+        const Rect body = windowBody(w);
+        const Rect list{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 22), static_cast<int16_t>(body.w - 16), 56};
+        if (cursorX >= list.x && cursorY >= list.y && cursorX < list.x + list.w && cursorY < list.y + list.h) {
             hoverInput_ = true;
         }
     } else if (w.kind == WindowKind::TaskManager) {
@@ -3786,22 +5493,39 @@ void WindowManager::updateHover(int16_t cursorX, int16_t cursorY) {
         const Rect body = windowBody(w);
         const Rect prevBtn{static_cast<int16_t>(body.x + body.w - 56), static_cast<int16_t>(body.y + 4), 12, 10};
         const Rect nextBtn{static_cast<int16_t>(body.x + body.w - 40), static_cast<int16_t>(body.y + 4), 12, 10};
+        const Rect searchBtn{static_cast<int16_t>(body.x + body.w - 24), static_cast<int16_t>(body.y + 4), 18, 10};
+        const Rect searchBox{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 20), static_cast<int16_t>(body.w - 16), 12};
         if ((cursorX >= prevBtn.x && cursorY >= prevBtn.y && cursorX < prevBtn.x + prevBtn.w && cursorY < prevBtn.y + prevBtn.h) ||
-            (cursorX >= nextBtn.x && cursorY >= nextBtn.y && cursorX < nextBtn.x + nextBtn.w && cursorY < nextBtn.y + nextBtn.h)) {
+            (cursorX >= nextBtn.x && cursorY >= nextBtn.y && cursorX < nextBtn.x + nextBtn.w && cursorY < nextBtn.y + nextBtn.h) ||
+            (cursorX >= searchBtn.x && cursorY >= searchBtn.y && cursorX < searchBtn.x + searchBtn.w && cursorY < searchBtn.y + searchBtn.h) ||
+            (cursorX >= searchBox.x && cursorY >= searchBox.y && cursorX < searchBox.x + searchBox.w && cursorY < searchBox.y + searchBox.h)) {
             hoverInput_ = true;
             return;
         }
 
-        const int16_t gridX = static_cast<int16_t>(body.x + 8);
-        const int16_t gridY = static_cast<int16_t>(body.y + 22);
-        const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
-        for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
-            const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
-            if (idx >= kHubEntryCount) break;
-            const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
-            const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
-            const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
-            if (cursorX >= card.x && cursorY >= card.y && cursorX < card.x + card.w && cursorY < card.y + card.h) {
+        if (globalSearchQuery_[0] != '\0') {
+            const Rect listRect{static_cast<int16_t>(body.x + 8), static_cast<int16_t>(body.y + 36), static_cast<int16_t>(body.w - 16), static_cast<int16_t>(body.h - 42)};
+            if ((cursorX >= listRect.x && cursorY >= listRect.y && cursorX < listRect.x + listRect.w && cursorY < listRect.y + listRect.h) ||
+                (appHubSearchKeyboardOpen_ && keyboard_.isOpen() && cursorY >= body.y + body.h - 62)) {
+                hoverInput_ = true;
+                return;
+            }
+        } else {
+            const int16_t gridX = static_cast<int16_t>(body.x + 8);
+            const int16_t gridY = static_cast<int16_t>(body.y + 36);
+            const uint8_t pageStart = static_cast<uint8_t>(appHubPage_ * kHubPerPage);
+            for (uint8_t slot = 0; slot < kHubPerPage; ++slot) {
+                const uint8_t idx = static_cast<uint8_t>(pageStart + slot);
+                if (idx >= kHubEntryCount) break;
+                const uint8_t col = static_cast<uint8_t>(slot % kHubCols);
+                const uint8_t row = static_cast<uint8_t>(slot / kHubCols);
+                const Rect card{static_cast<int16_t>(gridX + col * 66), static_cast<int16_t>(gridY + row * 34), 62, 30};
+                if (cursorX >= card.x && cursorY >= card.y && cursorX < card.x + card.w && cursorY < card.y + card.h) {
+                    hoverInput_ = true;
+                    return;
+                }
+            }
+            if (appHubSearchKeyboardOpen_ && keyboard_.isOpen() && cursorY >= body.y + body.h - 62) {
                 hoverInput_ = true;
                 return;
             }

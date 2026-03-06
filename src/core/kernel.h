@@ -76,6 +76,7 @@ class Kernel {
     katux::graphics::Rect lastCursorRect_{0, 0, 0, 0};
     bool safeMode_ = false;
     bool bootToBios_ = false;
+    bool bootToRescueBios_ = false;
 
     int16_t lastCursorX_ = 0;
     int16_t lastCursorY_ = 0;
@@ -96,6 +97,12 @@ class Kernel {
     uint32_t lockWakeGuardUntilMs_ = 0;
     uint32_t lockUnlockAnimStartMs_ = 0;
     uint8_t desktopWarmupFrames_ = 0;
+    uint32_t btnBHoldStartMs_ = 0;
+    bool rescueShortcutLatched_ = false;
+    bool rescueHoldHintVisible_ = false;
+    uint8_t rescueHoldHintRemainingSec_ = 255;
+    katux::graphics::Rect rescueHoldHintRect_{12, 96, 216, 12};
+    Mode modeBeforeBios_ = Mode::Desktop;
 
     void dispatchEvents();
     void handleEvent(const Event& event);
@@ -110,8 +117,13 @@ class Kernel {
     void applyPerformanceProfile(uint8_t profile);
     void applyConfig();
     void syncDesktopState();
+    void applyTimezoneOffset();
     void applyManualTime();
     void trySyncTime(uint32_t now);
+    void updateRescueShortcut(uint32_t now);
+    void rebootWithLoading(uint8_t bootFlags);
+    void enterDesktopFromLock();
+    void wipePersistentStorage();
 };
 
 Kernel& kernel();

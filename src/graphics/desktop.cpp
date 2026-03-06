@@ -27,6 +27,11 @@ void Desktop::begin(katux::core::EventManager* events, bool safeMode) {
     resetConfirmUntilMs_ = 0;
     toast_[0] = '\0';
     toastUntilMs_ = 0;
+    quickActionPulseUntilMs_ = 0;
+    quickActionPulseIndex_ = -1;
+    quickActionHoverIndex_ = -1;
+    lastCursorX_ = 0;
+    lastCursorY_ = 0;
 
     appCount_ = 0;
     apps_[appCount_++] = {"Apps", WindowKind::AppHub, {8, 20, 24, 20}, {8, 44, 34, 11}, 6};
@@ -36,11 +41,14 @@ void Desktop::begin(katux::core::EventManager* events, bool safeMode) {
     apps_[appCount_++] = {"WiFi", WindowKind::WifiManager, {8, 62, 24, 20}, {8, 86, 32, 11}, 5};
     apps_[appCount_++] = {"Tasks", WindowKind::TaskManager, {48, 62, 24, 20}, {48, 86, 40, 11}, 2};
     apps_[appCount_++] = {"Browser", WindowKind::Browser, {88, 62, 24, 20}, {86, 86, 48, 11}, 4};
-    apps_[appCount_++] = {"Desktop", WindowKind::DesktopConfig, {128, 62, 24, 20}, {126, 86, 48, 11}, 1};
+    apps_[appCount_++] = {"DateTime", WindowKind::DateTime, {128, 62, 24, 20}, {124, 86, 58, 11}, 11};
+    apps_[appCount_++] = {"Desktop", WindowKind::DesktopConfig, {8, 20, 24, 20}, {8, 44, 48, 11}, 1};
     apps_[appCount_++] = {"Alerts", WindowKind::Notifications, {8, 20, 24, 20}, {8, 44, 34, 11}, 0};
+    apps_[appCount_++] = {"Reboot", WindowKind::Reboot, {48, 20, 24, 20}, {46, 44, 40, 11}, 1};
     apps_[appCount_++] = {"Demo", WindowKind::Demo, {48, 20, 24, 20}, {48, 44, 32, 11}, 6};
     apps_[appCount_++] = {"Pixel", WindowKind::GamePixel, {88, 20, 24, 20}, {88, 44, 32, 11}, 8};
     apps_[appCount_++] = {"Orbit", WindowKind::GameOrbit, {128, 20, 24, 20}, {128, 44, 32, 11}, 9};
+    apps_[appCount_++] = {"Plinko", WindowKind::GamePlinko, {8, 62, 24, 20}, {8, 86, 40, 11}, 10};
 
     for (uint8_t i = 0; i < kMaxApps; ++i) {
         appWindowIds_[i] = -1;
@@ -137,11 +145,30 @@ bool Desktop::onEvent(const katux::core::Event& event, int16_t cursorX, int16_t 
         const bool inTaskbar = cursorY >= taskbarTop;
 
         if (contextMenuOpen_) {
-            const Rect row{contextMenuRect_.x, contextMenuRect_.y, contextMenuRect_.w, contextMenuRect_.h};
-            if (cursorX >= row.x && cursorY >= row.y && cursorX < row.x + row.w && cursorY < row.y + row.h) {
+            const int8_t item = hitContextMenuItem(cursorX, cursorY);
+            if (item == 0) {
                 desktopShowIcons_ = !desktopShowIcons_;
                 windows_.setDesktopIconsVisible(desktopShowIcons_);
                 showToast(desktopShowIcons_ ? "Desktop icons on" : "Desktop icons off");
+            } else if (item == 1) {
+                invalidateAll();
+                showToast("Desktop refreshed");
+            } else if (item == 2) {
+                windows_.cleanDesktopToAppsOnly();
+                refreshDesktopConfig();
+                selectedIcon_ = 0;
+                showToast("Desktop cleaned");
+            } else if (item == 3) {
+                const int8_t desktopCfg = appIndexForKind(WindowKind::DesktopConfig);
+                if (desktopCfg >= 0) {
+                    openWindowForApp(static_cast<uint8_t>(desktopCfg));
+                    showToast("Desktop setup");
+                }
+            } else if (item == 4) {
+                startOpen_ = true;
+                startMenuScroll_ = 0;
+                startPowerOpen_ = false;
+                showToast("Start menu");
             }
             contextMenuOpen_ = false;
             return true;
@@ -227,6 +254,29 @@ bool Desktop::onEvent(const katux::core::Event& event, int16_t cursorX, int16_t 
         }
 
         if (inTaskbar) {
+            const int8_t quickHit = hitTaskbarQuickAction(cursorX, cursorY);
+            if (quickHit >= 0) {
+                WindowKind quickKind = WindowKind::Settings;
+                const char* toast = "Settings";
+                if (quickHit == 0) {
+                    quickKind = WindowKind::WifiManager;
+                    toast = "WiFi Manager";
+                } else if (quickHit == 1) {
+                    quickKind = WindowKind::Settings;
+                    toast = "Power settings";
+                } else if (quickHit == 2) {
+                    quickKind = WindowKind::DateTime;
+                    toast = "Date & Time";
+                }
+                const int8_t appIndex = appIndexForKind(quickKind);
+                if (appIndex >= 0 && openWindowForApp(static_cast<uint8_t>(appIndex))) {
+                    quickActionPulseIndex_ = quickHit;
+                    quickActionPulseUntilMs_ = millis() + 240U;
+                    showToast(toast);
+                }
+                return true;
+            }
+
             const int8_t taskHit = hitTaskbarItem(cursorX, cursorY);
             if (taskHit >= 0) {
                 const uint8_t targetId = static_cast<uint8_t>(taskHit);
@@ -401,6 +451,36 @@ int8_t Desktop::hitTaskbarItem(int16_t x, int16_t y) const {
     return -1;
 }
 
+int8_t Desktop::hitTaskbarQuickAction(int16_t x, int16_t y) const {
+    const int16_t y0 = static_cast<int16_t>(startRect_.y - 4);
+    const Rect wifiRect{186, static_cast<int16_t>(y0 + 3), 18, 8};
+    const Rect batteryRect{206, static_cast<int16_t>(y0 + 3), 30, 8};
+    const Rect clockRect{186, static_cast<int16_t>(y0 + 13), 50, 9};
+
+    if (x >= wifiRect.x && y >= wifiRect.y && x < wifiRect.x + wifiRect.w && y < wifiRect.y + wifiRect.h) {
+        return 0;
+    }
+    if (x >= batteryRect.x && y >= batteryRect.y && x < batteryRect.x + batteryRect.w && y < batteryRect.y + batteryRect.h) {
+        return 1;
+    }
+    if (x >= clockRect.x && y >= clockRect.y && x < clockRect.x + clockRect.w && y < clockRect.y + clockRect.h) {
+        return 2;
+    }
+    return -1;
+}
+
+int8_t Desktop::hitContextMenuItem(int16_t x, int16_t y) const {
+    if (!contextMenuOpen_) return -1;
+    if (x < contextMenuRect_.x || y < contextMenuRect_.y || x >= contextMenuRect_.x + contextMenuRect_.w || y >= contextMenuRect_.y + contextMenuRect_.h) {
+        return -1;
+    }
+    const int16_t relativeY = static_cast<int16_t>(y - (contextMenuRect_.y + 2));
+    if (relativeY < 0) return -1;
+    const int8_t idx = static_cast<int8_t>(relativeY / kContextMenuItemHeight);
+    if (idx < 0 || idx >= static_cast<int8_t>(kContextMenuItemCount)) return -1;
+    return idx;
+}
+
 bool Desktop::openWindowForApp(uint8_t appIndex) {
     if (appIndex >= appCount_) return false;
 
@@ -429,12 +509,18 @@ bool Desktop::openWindowForApp(uint8_t appIndex) {
         winId = windows_.createWindow("Pixel Snake", 22, 8, 196, 120, true, kind);
     } else if (kind == WindowKind::GameOrbit) {
         winId = windows_.createWindow("Orbit Pong", 22, 8, 196, 120, true, kind);
+    } else if (kind == WindowKind::GamePlinko) {
+        winId = windows_.createWindow("Plinko Rush", 22, 8, 196, 120, true, kind);
     } else if (kind == WindowKind::Notifications) {
         winId = windows_.createWindow("Notifications", 24, 10, 192, 114, true, kind);
     } else if (kind == WindowKind::WifiManager) {
         winId = windows_.createWindow("WiFi Manager", 12, 6, 216, 124, true, kind);
     } else if (kind == WindowKind::Browser) {
         winId = windows_.createWindow("Navigator", 10, 6, 220, 124, true, kind);
+    } else if (kind == WindowKind::DateTime) {
+        winId = windows_.createWindow("Date and Time", 14, 8, 212, 122, true, kind);
+    } else if (kind == WindowKind::Reboot) {
+        winId = windows_.createWindow("Reboot", 22, 12, 196, 104, true, kind);
     } else {
         winId = windows_.createWindow(apps_[appIndex].name, 36, 18, 164, 98, true, kind);
     }
@@ -517,11 +603,27 @@ void Desktop::renderWallpaper(Renderer& renderer, const Rect& clip) {
 bool Desktop::render(Renderer& renderer, bool fullRedraw, int16_t cursorX, int16_t cursorY) {
     if (!initialized_) return false;
 
-    if (toastUntilMs_ > 0 && millis() > toastUntilMs_) {
+    const uint32_t now = millis();
+
+    if (toastUntilMs_ > 0 && now > toastUntilMs_) {
         const Rect toastRect{68, static_cast<int16_t>(renderer.height() - 35), 112, 10};
         compositor_.invalidate(toastRect);
         toast_[0] = '\0';
         toastUntilMs_ = 0;
+    }
+
+    if (quickActionPulseUntilMs_ > 0 && now > quickActionPulseUntilMs_) {
+        quickActionPulseUntilMs_ = 0;
+        quickActionPulseIndex_ = -1;
+        compositor_.invalidate({182, 111, 58, 24});
+    }
+
+    lastCursorX_ = cursorX;
+    lastCursorY_ = cursorY;
+    const int8_t quickHover = hitTaskbarQuickAction(cursorX, cursorY);
+    if (quickHover != quickActionHoverIndex_) {
+        quickActionHoverIndex_ = quickHover;
+        compositor_.invalidate({182, 111, 58, 24});
     }
 
     if (fullRedraw) {
@@ -598,6 +700,11 @@ void Desktop::renderIcons(Renderer& renderer, const Rect* clip) {
                     renderer.fillRect({static_cast<int16_t>(app.icon.x + 12), static_cast<int16_t>(app.icon.y + 6), 6, 1}, 0x3186);
                     renderer.fillRect({static_cast<int16_t>(app.icon.x + 12), static_cast<int16_t>(app.icon.y + 9), 6, 1}, 0x3186);
                     renderer.fillRect({static_cast<int16_t>(app.icon.x + 12), static_cast<int16_t>(app.icon.y + 12), 4, 1}, 0x3186);
+                } else if (app.accent == 11) {
+                    renderer.drawRect({static_cast<int16_t>(app.icon.x + 4), static_cast<int16_t>(app.icon.y + 5), 12, 12}, 0xFFFF);
+                    renderer.fillRect({static_cast<int16_t>(app.icon.x + 10), static_cast<int16_t>(app.icon.y + 7), 1, 5}, 0xFFFF);
+                    renderer.fillRect({static_cast<int16_t>(app.icon.x + 10), static_cast<int16_t>(app.icon.y + 10), 3, 1}, 0xFFFF);
+                    renderer.fillRect({static_cast<int16_t>(app.icon.x + 9), static_cast<int16_t>(app.icon.y + 3), 3, 2}, 0xFFFF);
                 } else {
                     renderer.fillRect({static_cast<int16_t>(app.icon.x + 5), static_cast<int16_t>(app.icon.y + 14), 10, 2}, 0xFFFF);
                     renderer.fillRect({static_cast<int16_t>(app.icon.x + 7), static_cast<int16_t>(app.icon.y + 11), 6, 2}, 0xFFFF);
@@ -675,7 +782,11 @@ void Desktop::renderTaskbar(Renderer& renderer, const Rect* clip) {
             renderer.fillRect({ix, static_cast<int16_t>(iy + 5), 6, 1}, 0x0000);
             renderer.fillRect({static_cast<int16_t>(ix + 1), static_cast<int16_t>(iy + 3), 4, 1}, 0x0000);
             renderer.fillRect({static_cast<int16_t>(ix + 2), static_cast<int16_t>(iy + 1), 2, 1}, 0x0000);
-        } else if (items[i].kind == WindowKind::GamePixel || items[i].kind == WindowKind::GameOrbit) {
+        } else if (items[i].kind == WindowKind::DateTime) {
+            renderer.drawRect({ix, iy, 6, 6}, 0x0000);
+            renderer.fillRect({static_cast<int16_t>(ix + 3), static_cast<int16_t>(iy + 1), 1, 3}, 0x0000);
+            renderer.fillRect({static_cast<int16_t>(ix + 3), static_cast<int16_t>(iy + 3), 2, 1}, 0x0000);
+        } else if (items[i].kind == WindowKind::GamePixel || items[i].kind == WindowKind::GameOrbit || items[i].kind == WindowKind::GamePlinko) {
             renderer.drawRect({ix, iy, 6, 6}, 0x0000);
             renderer.fillRect({static_cast<int16_t>(ix + 2), static_cast<int16_t>(iy + 2), 2, 2}, 0x0000);
         } else if (items[i].kind == WindowKind::Notepad) {
@@ -687,8 +798,22 @@ void Desktop::renderTaskbar(Renderer& renderer, const Rect* clip) {
         }
     }
 
+    const bool pulseActive = quickActionPulseUntilMs_ > millis();
+    const Rect wifiRect{186, static_cast<int16_t>(y + 3), 18, 8};
+    const Rect batteryRect{206, static_cast<int16_t>(y + 3), 30, 8};
+    const Rect clockRect{186, static_cast<int16_t>(y + 13), 50, 9};
+
+    const bool wifiPulse = pulseActive && quickActionPulseIndex_ == 0;
+    const bool batteryPulse = pulseActive && quickActionPulseIndex_ == 1;
+    const bool clockPulse = pulseActive && quickActionPulseIndex_ == 2;
+    const bool wifiHover = quickActionHoverIndex_ == 0;
+    const bool batteryHover = quickActionHoverIndex_ == 1;
+    const bool clockHover = quickActionHoverIndex_ == 2;
+
     const bool wifiOn = WiFi.status() == WL_CONNECTED;
-    renderer.fillRect({186, static_cast<int16_t>(y + 3), 18, 8}, wifiOn ? 0x07E0 : 0x7BEF);
+    const uint16_t wifiBg = wifiPulse ? 0xA7E0 : (wifiHover ? 0x56F0 : (wifiOn ? 0x07E0 : 0x6B4D));
+    renderer.fillRect(wifiRect, wifiBg);
+    renderer.drawRect(wifiRect, (wifiPulse || wifiHover) ? 0xFFFF : 0xBDF7);
     renderer.fillRect({188, static_cast<int16_t>(y + 9), 2, 1}, 0x0000);
     renderer.fillRect({191, static_cast<int16_t>(y + 7), 2, 3}, 0x0000);
     renderer.fillRect({194, static_cast<int16_t>(y + 5), 2, 5}, 0x0000);
@@ -697,9 +822,9 @@ void Desktop::renderTaskbar(Renderer& renderer, const Rect* clip) {
     int level = StickCP2.Power.getBatteryLevel();
     if (level < 0) level = 0;
     if (level > 100) level = 100;
-    const uint16_t batBg = level < 20 ? 0xF800 : 0x39E7;
-    renderer.fillRect({206, static_cast<int16_t>(y + 3), 30, 8}, batBg);
-    renderer.drawRect({206, static_cast<int16_t>(y + 3), 30, 8}, 0xFFFF);
+    const uint16_t batBg = batteryPulse ? 0xFFE0 : (batteryHover ? 0x7BEF : (level < 20 ? 0xF800 : 0x39E7));
+    renderer.fillRect(batteryRect, batBg);
+    renderer.drawRect(batteryRect, (batteryPulse || batteryHover) ? 0xFFFF : 0xBDF7);
     char bat[8] = "0%";
     snprintf(bat, sizeof(bat), "%d%%", level);
     renderer.drawText(209, y + 4, bat, 0x0000, batBg);
@@ -710,9 +835,10 @@ void Desktop::renderTaskbar(Renderer& renderer, const Rect* clip) {
     if (nowTs > 1000 && localtime_r(&nowTs, &tmv)) {
         strftime(hm, sizeof(hm), "%H:%M", &tmv);
     }
-    renderer.fillRect({186, static_cast<int16_t>(y + 13), 50, 9}, 0x31A6);
-    renderer.drawRect({186, static_cast<int16_t>(y + 13), 50, 9}, 0x7BEF);
-    renderer.drawText(195, y + 14, hm, 0xFFFF, 0x31A6);
+    const uint16_t clockBg = clockPulse ? 0x4C9F : (clockHover ? 0x3AAF : 0x31A6);
+    renderer.fillRect(clockRect, clockBg);
+    renderer.drawRect(clockRect, (clockPulse || clockHover) ? 0xFFFF : 0x7BEF);
+    renderer.drawText(195, y + 14, hm, 0xFFFF, clockBg);
 
     if (toast_[0] != '\0' && toastUntilMs_ > millis()) {
         const Rect toastRect{68, static_cast<int16_t>(y - 11), 112, 10};
@@ -802,23 +928,35 @@ void Desktop::renderContextMenu(Renderer& renderer, const Rect* clip) {
         return;
     }
 
-    const Rect backdrop{0, 0, 240, static_cast<int16_t>(startRect_.y - 4)};
-    renderer.fillRect(backdrop, 0x3186);
-
-    renderWallpaper(renderer, contextMenuRect_);
     renderer.fillRect(contextMenuRect_, 0x18C3);
     renderer.drawRect(contextMenuRect_, 0xFFFF);
 
-    const Rect row{contextMenuRect_.x, contextMenuRect_.y, contextMenuRect_.w, contextMenuRect_.h};
-    const Rect checkbox{static_cast<int16_t>(row.x + 4), static_cast<int16_t>(row.y + 3), 8, 8};
-    renderer.fillRect(row, 0x2145);
-    renderer.drawRect(row, 0x6B4D);
-    renderer.fillRect(checkbox, 0x0000);
-    renderer.drawRect(checkbox, 0xFFFF);
-    if (desktopShowIcons_) {
-        renderer.drawText(static_cast<int16_t>(checkbox.x + 1), static_cast<int16_t>(checkbox.y - 1), "x", 0x07E0, 0x0000);
+    const char* labels[kContextMenuItemCount] = {
+        "Toggle desktop icons",
+        "Refresh",
+        "Clean up desktop",
+        "Desktop app",
+        "Open Start menu"
+    };
+
+    for (uint8_t i = 0; i < kContextMenuItemCount; ++i) {
+        const Rect row{contextMenuRect_.x + 1, static_cast<int16_t>(contextMenuRect_.y + 2 + i * kContextMenuItemHeight),
+                       static_cast<int16_t>(contextMenuRect_.w - 2), static_cast<int16_t>(kContextMenuItemHeight - 1)};
+        const uint16_t rowBg = (i & 1U) ? 0x2145 : 0x2965;
+        renderer.fillRect(row, rowBg);
+
+        if (i == 0) {
+            const Rect checkbox{static_cast<int16_t>(row.x + 2), static_cast<int16_t>(row.y + 1), 7, 7};
+            renderer.fillRect(checkbox, 0x0000);
+            renderer.drawRect(checkbox, 0xFFFF);
+            if (desktopShowIcons_) {
+                renderer.drawText(static_cast<int16_t>(checkbox.x + 1), static_cast<int16_t>(checkbox.y - 1), "x", 0x07E0, 0x0000);
+            }
+            renderer.drawText(static_cast<int16_t>(row.x + 12), static_cast<int16_t>(row.y + 1), labels[i], 0xFFFF, rowBg);
+        } else {
+            renderer.drawText(static_cast<int16_t>(row.x + 4), static_cast<int16_t>(row.y + 1), labels[i], 0xFFFF, rowBg);
+        }
     }
-    renderer.drawText(static_cast<int16_t>(row.x + 16), static_cast<int16_t>(row.y + 3), "Afficher les icones du bureau", 0xFFFF, 0x2145);
 }
 
 CursorStyle Desktop::cursorStyle() const {
@@ -830,9 +968,12 @@ void Desktop::invalidateAll() {
     windows_.invalidateAll();
 }
 
-void Desktop::setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled) {
+void Desktop::setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled,
+                             bool autoTime, int8_t timezoneOffset, uint16_t manualYear, uint8_t manualMonth, uint8_t manualDay, uint8_t manualHour,
+                             uint8_t manualMinute) {
     animationsEnabled_ = animationsEnabled;
-    windows_.setSystemState(darkTheme, brightness, cursorSpeed, performanceProfile, debugOverlay, animationsEnabled);
+    windows_.setSystemState(darkTheme, brightness, cursorSpeed, performanceProfile, debugOverlay, animationsEnabled, autoTime, timezoneOffset, manualYear,
+                            manualMonth, manualDay, manualHour, manualMinute);
     invalidateAll();
 }
 

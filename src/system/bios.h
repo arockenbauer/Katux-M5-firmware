@@ -21,6 +21,11 @@ class Bios {
     void setDebugOverlay(bool enabled);
 
     bool takeResetRequest();
+    bool takeRebootRequest();
+    bool takeFactoryResetRequest(bool& wipeStorage);
+
+    void setRescueMode(bool enabled);
+    bool rescueMode() const;
 
     void setDebugStats(uint8_t fps, uint8_t queueDepth, uint32_t freeHeap, bool fsReady, bool safeMode);
 
@@ -30,6 +35,10 @@ class Bios {
     bool darkTheme_ = true;
     bool debugOverlay_ = false;
     bool resetRequested_ = false;
+    bool rescueMode_ = false;
+    bool rebootRequested_ = false;
+    bool factoryResetRequested_ = false;
+    bool factoryResetWipeStorage_ = false;
 
     uint8_t fps_ = 0;
     uint8_t queueDepth_ = 0;

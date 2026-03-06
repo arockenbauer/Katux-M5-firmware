@@ -416,8 +416,12 @@ class BrowserApp {
     uint32_t lastProgressAnimMs_ = 0;
     uint8_t lastBlockCount_ = 0;
     int16_t lastProgressFill_ = 0;
+    uint16_t progressGlowPermille_ = 0;
+    int16_t lastProgressGlowX_ = -32768;
+    int16_t lastProgressGlowW_ = 0;
     int16_t lastScrollY_ = 0;
     uint8_t lastVisibleBlockCount_ = 0;
+    int16_t lastDocHeight_ = 0;
     char lastStatusLine_[40] = "";
 
     bool inStyleTag_ = false;

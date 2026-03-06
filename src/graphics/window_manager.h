@@ -26,7 +26,10 @@ enum class WindowKind : uint8_t {
     WifiManager,
     Browser,
     ImageVisualizer,
-    DesktopConfig
+    DateTime,
+    DesktopConfig,
+    GamePlinko,
+    Reboot
 };
 
 struct WindowTaskItem {
@@ -81,7 +84,9 @@ class WindowManager {
     uint8_t listTaskItems(WindowTaskItem* out, uint8_t maxItems, bool minimizedOnly) const;
     bool windowIsActive(uint8_t id) const;
 
-    void setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled);
+    void setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled,
+                        bool autoTime, int8_t timezoneOffset, uint16_t manualYear, uint8_t manualMonth, uint8_t manualDay, uint8_t manualHour,
+                        uint8_t manualMinute);
     void setRuntimeStats(uint8_t fps, uint32_t freeHeap, uint32_t uptimeMs, uint8_t queueDepth);
     void notify(const char* text);
     uint8_t consumeDirtyRegions(Rect* out, uint8_t maxItems);
@@ -92,6 +97,7 @@ class WindowManager {
     bool hasWindowAt(int16_t x, int16_t y) const;
     void getDesktopConfig(bool& showIcons, WindowKind* slots, uint8_t maxSlots) const;
     void setDesktopIconsVisible(bool visible);
+    void cleanDesktopToAppsOnly();
 
    private:
     Window windows_[kMaxWindows]{};
@@ -127,19 +133,43 @@ class WindowManager {
 
     struct ExplorerEntry {
         char name[32] = "";
-        uint8_t folder = 0;
-        bool deleted = false;
+        char path[96] = "";
+        uint32_t size = 0;
+        bool isDir = false;
+        bool selected = false;
     };
 
-    static constexpr uint8_t kFolderCount = 3;
-    static constexpr uint8_t kExplorerEntryCount = 16;
+    enum class ExplorerKeyboardMode : uint8_t {
+        None = 0,
+        CreateFile,
+        Rename,
+        Move
+    };
+
+    static constexpr uint8_t kExplorerEntryCount = 24;
+    static constexpr uint8_t kExplorerClipboardMax = 12;
     ExplorerEntry explorer_[kExplorerEntryCount]{};
     uint8_t explorerCount_ = 0;
-    uint8_t explorerFolder_ = 0;
+    int16_t explorerScroll_ = 0;
     int8_t explorerSelected_ = -1;
+    uint8_t explorerSelectedCount_ = 0;
     uint32_t trashAnimUntilMs_ = 0;
+    uint32_t explorerDeleteConfirmUntilMs_ = 0;
+    bool explorerMultiSelect_ = false;
+    char explorerPath_[96] = "/";
+    char explorerClipboardPaths_[kExplorerClipboardMax][96]{};
+    uint8_t explorerClipboardCount_ = 0;
+    bool explorerClipboardCut_ = false;
+    char explorerMoveSource_[96] = "";
+    ExplorerKeyboardMode explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+    bool explorerKeyboardOpen_ = false;
 
-    char notepadText_[33] = "";
+    static constexpr size_t kNotepadTextMax = 1024;
+    static constexpr size_t kSearchTextMax = 128;
+    static constexpr uint8_t kGlobalSearchResultMax = 14;
+    char notepadText_[kNotepadTextMax] = "";
+    char notepadPath_[96] = "/notes.txt";
+    bool notepadBinary_ = false;
     bool notepadKeyboardOpen_ = false;
     bool notepadDirty_ = false;
     uint32_t notepadToastUntilMs_ = 0;
@@ -186,10 +216,23 @@ class WindowManager {
     uint8_t taskPsramSeries_[kTaskPerfPoints]{};
     uint8_t appHubSelected_ = 0;
     uint8_t appHubPage_ = 0;
+    bool appHubSearchKeyboardOpen_ = false;
+    char globalSearchQuery_[kSearchTextMax] = "";
+    struct GlobalSearchResult {
+        uint8_t type = 0;
+        WindowKind kind = WindowKind::Generic;
+        int32_t actionData = 0;
+        char label[36] = "";
+        char value[96] = "";
+    };
+    GlobalSearchResult globalSearchResults_[kGlobalSearchResultMax]{};
+    uint8_t globalSearchCount_ = 0;
+    uint8_t globalSearchSelected_ = 0;
     static constexpr uint8_t kDesktopSlotCount = 6;
     WindowKind desktopSlots_[kDesktopSlotCount]{WindowKind::AppHub, WindowKind::Settings, WindowKind::Explorer, WindowKind::Notepad, WindowKind::WifiManager, WindowKind::TaskManager};
     bool desktopShowIcons_ = true;
     bool desktopPrefsReady_ = false;
+    uint8_t desktopConfigScroll_ = 0;
     bool gameCloseHintVisible_ = false;
     uint32_t gameCloseHintUntilMs_ = 0;
     uint32_t gameCloseHoldStartMs_ = 0;
@@ -211,6 +254,19 @@ class WindowManager {
     uint16_t orbitScore_ = 0;
     uint32_t orbitStepMs_ = 0;
     bool orbitOver_ = false;
+    int16_t plinkoBallX16_ = 0;
+    int16_t plinkoBallY16_ = 0;
+    int16_t plinkoBallVx16_ = 0;
+    int16_t plinkoBallVy16_ = 0;
+    uint16_t plinkoScore_ = 0;
+    uint16_t plinkoBestDrop_ = 0;
+    uint8_t plinkoDrops_ = 0;
+    uint8_t plinkoLastMult_ = 0;
+    uint8_t plinkoMode_ = 0;
+    int16_t plinkoChaosWind16_ = 0;
+    uint32_t plinkoStepMs_ = 0;
+    bool plinkoBallActive_ = false;
+    bool plinkoLastScored_ = false;
     static constexpr uint8_t kBrowserItemMax = 32;
     static constexpr uint8_t kBrowserClickMax = 32;
     // smaller history in the window manager as well
@@ -284,10 +340,13 @@ class WindowManager {
     void renderWifiManager(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderBrowser(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderImageVisualizer(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
+    void renderDateTime(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderDesktopConfig(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
+    void renderReboot(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderAppHub(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderGamePixel(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderGameOrbit(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
+    void renderGamePlinko(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
 
     bool isCoveredByTopWindow(const Rect& rect, uint8_t zIndex) const;
     int8_t createKindWindow(WindowKind kind);
@@ -324,9 +383,32 @@ class WindowManager {
     void loadSavedWifi();
     void saveWifiCredential(const char* ssid, const char* password);
     void clearSavedWifi();
-    uint8_t explorerFolderForName(const char* name) const;
+    bool normalizeExplorerPath(const char* in, char* out, size_t outLen) const;
+    bool explorerNameToPath(const char* name, char* out, size_t outLen) const;
+    bool explorerReadTextFile(const char* path, char* out, size_t outLen) const;
+    bool explorerWriteTextFile(const char* path, const char* text) const;
+    bool explorerCopyFile(const char* src, const char* dst) const;
+    bool explorerDeletePath(const char* path);
+    bool explorerIsImageFile(const char* path) const;
+    bool explorerIsTextLikeFile(const char* path) const;
+    bool explorerFileLooksBinary(const char* path) const;
+    void explorerClearSelection();
+    void explorerToggleSelection(int16_t index);
+    bool explorerCollectTargets(int16_t* out, uint8_t max, uint8_t& outCount) const;
+    void explorerFillClipboard(bool cutMode);
+    bool explorerPasteClipboardTo(const char* dstDir);
+    void explorerOpenSelected();
+    void explorerOpenFile(const char* path);
+    void explorerOpenCreateDialog();
+    void explorerOpenRenameDialog();
+    void explorerOpenMoveDialog();
+    void explorerApplyKeyboardAccept(const char* value);
     void desktopLoadConfig();
     void desktopSaveConfig();
+    bool globalSearchContainsFold(const char* text, const char* needle) const;
+    void globalSearchRebuild();
+    void globalSearchAddResult(uint8_t type, const char* label, const char* value, WindowKind kind, int32_t actionData);
+    bool globalSearchLaunchResult(const GlobalSearchResult& result);
 };
 
 }

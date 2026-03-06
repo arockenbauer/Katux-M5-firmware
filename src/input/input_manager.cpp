@@ -33,7 +33,7 @@ void InputManager::update() {
 
     if (aPressed && bPressed && !comboABLatched_) {
         comboABLatched_ = true;
-        emit(katux::core::EventType::ShortcutSafeMode, katux::core::EventSource::ButtonA);
+        emit(katux::core::EventType::OpenBios, katux::core::EventSource::ButtonA);
     } else if (!aPressed || !bPressed) {
         comboABLatched_ = false;
     }

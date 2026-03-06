@@ -39,7 +39,7 @@ class SoftKeyboard {
     bool browserMode_ = false;
     Layout layout_ = Layout::Azerty;
     // text entry buffer; 256 characters is still plenty for most fields
-    char value_[256] = "";
+    char value_[1024] = "";
     uint16_t cursorPos_ = 0;
     uint16_t viewOffset_ = 0;
     uint8_t macroPage_ = 0;

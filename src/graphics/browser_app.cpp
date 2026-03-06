@@ -1187,8 +1187,12 @@ void BrowserApp::begin(const char* initialUrl, const char* const* presets, uint8
     progressTarget_ = 0;
     lastProgressAnimMs_ = millis();
     lastProgressFill_ = 0;
+    progressGlowPermille_ = 0;
+    lastProgressGlowX_ = -32768;
+    lastProgressGlowW_ = 0;
     lastScrollY_ = 0;
     lastVisibleBlockCount_ = 0;
+    lastDocHeight_ = 0;
     scrollVelocity_ = 0.0f;
     lastScrollAnimMs_ = millis();
     lastStatusLine_[0] = '\0';
@@ -1292,8 +1296,12 @@ void BrowserApp::clearDocument() {
     progressTarget_ = 0;
     lastProgressAnimMs_ = millis();
     lastProgressFill_ = 0;
+    progressGlowPermille_ = 0;
+    lastProgressGlowX_ = -32768;
+    lastProgressGlowW_ = 0;
     lastScrollY_ = 0;
     lastVisibleBlockCount_ = 0;
+    lastDocHeight_ = 0;
     scrollVelocity_ = 0.0f;
     scrollInputDir_ = 0;
     scrollInputBoost_ = 0;
@@ -1524,7 +1532,17 @@ void BrowserApp::updateProgressAnimation(uint32_t nowMs) {
         if (progressDisplayed_ < progressTarget_) progressDisplayed_ = progressTarget_;
     }
 
-    if (progressDisplayed_ != before) {
+    const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
+    const uint16_t glowBefore = progressGlowPermille_;
+    if (loadingVisual) {
+        uint16_t glowStep = static_cast<uint16_t>(dt * 3U);
+        if (glowStep < 6U) glowStep = 6U;
+        progressGlowPermille_ = static_cast<uint16_t>((progressGlowPermille_ + glowStep) % 1000U);
+    } else {
+        progressGlowPermille_ = 0;
+    }
+
+    if (progressDisplayed_ != before || progressGlowPermille_ != glowBefore) {
         dirtyProgress_ = true;
     }
 }
@@ -3604,6 +3622,9 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
     if (currentFill < 1) currentFill = 1;
     if (currentFill > barW) currentFill = barW;
 
+    const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
+    const int16_t glowW = 14;
+
     if (dirtyProgress_ || lastProgress_ != currentProgress || strcmp(lastStatusLine_, statusLine) != 0 || statusVisibilityChanged) {
         if (statusVisibilityChanged && count < maxItems) {
             out[count++] = Rect{viewport.x, static_cast<int16_t>(viewport.y + viewport.h - 12), viewport.w, 12};
@@ -3642,9 +3663,38 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
                 out[count++] = barBand;
             }
 
+            const Rect fillBand{barBand.x, barBand.y, currentFill, barBand.h};
+            int16_t glowX = -32768;
+            int16_t glowVisibleW = 0;
+            if (loadingVisual && currentFill > 1) {
+                const int16_t glowRange = static_cast<int16_t>(currentFill + glowW);
+                glowX = static_cast<int16_t>(fillBand.x - glowW + static_cast<int16_t>((static_cast<int32_t>(glowRange) * progressGlowPermille_) / 1000));
+                const Rect glowRect{glowX, fillBand.y, glowW, fillBand.h};
+                const Rect glowClip = rectIntersection(glowRect, fillBand);
+                glowX = glowClip.x;
+                glowVisibleW = glowClip.w;
+                if (glowClip.w > 0 && glowClip.h > 0 && count < maxItems) {
+                    out[count++] = glowClip;
+                }
+            }
+
+            if (lastProgressGlowW_ > 0) {
+                const Rect previousGlow{lastProgressGlowX_, fillBand.y, lastProgressGlowW_, fillBand.h};
+                const Rect prevClip = rectIntersection(previousGlow, fillBand);
+                if (prevClip.w > 0 && prevClip.h > 0 && count < maxItems) {
+                    out[count++] = prevClip;
+                }
+            }
+
+            lastProgressGlowX_ = glowX;
+            lastProgressGlowW_ = glowVisibleW;
+
             if (count == 0 && count < maxItems) {
                 out[count++] = statusBar;
             }
+        } else {
+            lastProgressGlowX_ = -32768;
+            lastProgressGlowW_ = 0;
         }
 
         copyTrim(lastStatusLine_, sizeof(lastStatusLine_), statusLine, sizeof(lastStatusLine_) - 1);
@@ -3654,6 +3704,7 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
         dirtyProgress_ = false;
     }
 
+    const int16_t currentDocHeight = layout_.docHeight();
     if (dirtyContent_ || lastBlockCount_ != currentBlockCount || lastScrollY_ != scrollY_ || statusVisibilityChanged) {
         uint8_t visibleCount = 0;
 
@@ -3665,16 +3716,44 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
             ++visibleCount;
         }
 
+        const int16_t visibleH = static_cast<int16_t>(contentBottom - contentTop);
+        const int16_t visibleTopDoc = scrollY_;
+        const int16_t visibleBottomDoc = static_cast<int16_t>(scrollY_ + visibleH);
+        const int16_t growthStartDoc = currentDocHeight >= lastDocHeight_ ? static_cast<int16_t>(lastDocHeight_ > 10 ? lastDocHeight_ - 10 : 0) : 0;
+
         const bool visibleChanged = (visibleCount != lastVisibleBlockCount_) || (lastScrollY_ != scrollY_) || statusVisibilityChanged;
-        if (visibleChanged && count < maxItems) {
-            const Rect contentRegion{viewport.x, contentTop, viewport.w, static_cast<int16_t>(contentBottom - contentTop)};
-            out[count++] = contentRegion;
+        bool contentNeedsRepaint = visibleChanged;
+        if (!contentNeedsRepaint && dirtyContent_) {
+            const bool dirtyTouchesVisible = !(currentDocHeight < visibleTopDoc || growthStartDoc > visibleBottomDoc);
+            contentNeedsRepaint = dirtyTouchesVisible;
         }
 
-        lastVisibleBlockCount_ = visibleCount;
-        lastScrollY_ = scrollY_;
-        lastBlockCount_ = currentBlockCount;
-        dirtyContent_ = false;
+        bool committedState = true;
+        if (contentNeedsRepaint) {
+            const Rect contentRegion{viewport.x, contentTop, viewport.w, static_cast<int16_t>(contentBottom - contentTop)};
+            Rect repaint = contentRegion;
+
+            if (!visibleChanged && dirtyContent_ && currentDocHeight >= lastDocHeight_) {
+                const int16_t dirtyTopPx = static_cast<int16_t>(contentTop + growthStartDoc - scrollY_);
+                repaint = rectIntersection(contentRegion, Rect{viewport.x, dirtyTopPx, viewport.w, static_cast<int16_t>(contentBottom - dirtyTopPx)});
+            }
+
+            if (repaint.w > 0 && repaint.h > 0) {
+                if (count < maxItems) {
+                    out[count++] = repaint;
+                } else {
+                    committedState = false;
+                }
+            }
+        }
+
+        if (committedState) {
+            lastVisibleBlockCount_ = visibleCount;
+            lastScrollY_ = scrollY_;
+            lastBlockCount_ = currentBlockCount;
+            lastDocHeight_ = currentDocHeight;
+            dirtyContent_ = false;
+        }
     }
 
     return count;
@@ -3794,8 +3873,15 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
     }
 
     if (renderContent) {
-        renderer.fillRect(viewport, 0xFFFF);
-        renderer.drawRect(viewport, 0x7BEF);
+        const int16_t contentBgBottom = static_cast<int16_t>(viewport.y + viewport.h - statusH);
+        const Rect contentBg{viewport.x, viewport.y, viewport.w, static_cast<int16_t>(contentBgBottom - viewport.y)};
+        const Rect bgPaint = clip ? rectIntersection(contentBg, *clip) : contentBg;
+        if (bgPaint.w > 0 && bgPaint.h > 0) {
+            renderer.fillRect(bgPaint, 0xFFFF);
+        }
+        if (!clip || rectsIntersect(viewport, *clip)) {
+            renderer.drawRect(viewport, 0x7BEF);
+        }
     }
 
     if (renderProgress) {
@@ -3836,15 +3922,27 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
         if (fill > barW) fill = barW;
 
         const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
+        const int16_t glowW = 14;
         const Rect barBand{static_cast<int16_t>(statusBar.x + 2), static_cast<int16_t>(statusBar.y + 9), barW, 2};
         const Rect barPaint = clip ? rectIntersection(barBand, *clip) : barBand;
         if (barPaint.w > 0 && barPaint.h > 0) {
             renderer.fillRect(barPaint, 0x7BEF);
-            if (loadingVisual && fill > 0) {
-                const Rect fillArea{barBand.x, barBand.y, fill, barBand.h};
-                const Rect fillPaint = rectIntersection(fillArea, barPaint);
-                if (fillPaint.w > 0 && fillPaint.h > 0) {
-                    renderer.fillRect(fillPaint, 0x07E0);
+        }
+
+        if (fill > 0) {
+            const Rect fillArea{barBand.x, barBand.y, fill, barBand.h};
+            const Rect fillPaint = rectIntersection(fillArea, barPaint);
+            if (fillPaint.w > 0 && fillPaint.h > 0) {
+                renderer.fillRect(fillPaint, 0x07E0);
+            }
+
+            if (loadingVisual) {
+                const int16_t glowRange = static_cast<int16_t>(fill + glowW);
+                const int16_t glowX = static_cast<int16_t>(fillArea.x - glowW + static_cast<int16_t>((static_cast<int32_t>(glowRange) * progressGlowPermille_) / 1000));
+                const Rect glowArea{glowX, fillArea.y, glowW, fillArea.h};
+                const Rect glowPaint = rectIntersection(rectIntersection(glowArea, fillArea), barPaint);
+                if (glowPaint.w > 0 && glowPaint.h > 0) {
+                    renderer.fillRect(glowPaint, 0x9FF2);
                 }
             }
         }
@@ -3854,6 +3952,7 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
         const int16_t contentTop = static_cast<int16_t>(viewport.y + 2);
         const int16_t contentBottom = static_cast<int16_t>(viewport.y + viewport.h - statusH);
         const int16_t visibleH = static_cast<int16_t>(contentBottom - contentTop);
+        const Rect contentRect{viewport.x, contentTop, viewport.w, visibleH};
         lastViewportH_ = visibleH;
 
         const int16_t docH = layout_.docHeight();
@@ -3861,7 +3960,9 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
         scrollY_ = clamp16(scrollY_, 0, maxScroll);
 
         if (!loaded_ && !loading_) {
-            renderer.drawText(static_cast<int16_t>(viewport.x + 6), static_cast<int16_t>(viewport.y + 20), "Open a page", 0x2104, 0xFFFF);
+            if (!clip || rectsIntersect(contentRect, *clip)) {
+                renderer.drawText(static_cast<int16_t>(viewport.x + 6), static_cast<int16_t>(viewport.y + 20), "Open a page", 0x2104, 0xFFFF);
+            }
             return;
         }
 
@@ -3877,7 +3978,9 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
                 if (ir.w > viewport.w - 8) ir.w = static_cast<int16_t>(viewport.w - 8);
                 if (ir.h > contentBottom - ir.y) ir.h = static_cast<int16_t>(contentBottom - ir.y);
                 if (ir.w > 0 && ir.h > 0) {
-                    image_.render(renderer, ir, b.src, nowMs);
+                    if (!clip || rectsIntersect(ir, *clip)) {
+                        image_.render(renderer, ir, b.src, nowMs);
+                    }
                     renderer_.addTarget(ir, 2, i);
                 }
                 continue;
@@ -3885,8 +3988,20 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
 
             int16_t rowH = b.style.fontSize == FontSize::Large ? 12 : (b.style.fontSize == FontSize::Small ? 8 : 10);
             Rect row{static_cast<int16_t>(viewport.x + 3), y, static_cast<int16_t>(viewport.w - 6), rowH};
+            if (clip && !rectsIntersect(row, *clip)) {
+                if (b.kind == 1) {
+                    renderer_.addTarget(row, 1, i);
+                } else if (b.kind == 6) {
+                    renderer_.addTarget(row, 6, i);
+                }
+                continue;
+            }
+
             uint16_t bg = b.kind == 1 ? 0xE71C : b.style.bg;
-            renderer.fillRect(row, bg);
+            const Rect rowPaint = clip ? rectIntersection(row, *clip) : row;
+            if (rowPaint.w > 0 && rowPaint.h > 0) {
+                renderer.fillRect(rowPaint, bg);
+            }
 
             const int16_t glyphW = b.style.fontSize == FontSize::Large ? 7 : 6;
             int16_t txtX = static_cast<int16_t>(row.x + 1);
@@ -3908,15 +4023,19 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
 
         if (scrollY_ > 0) {
             const Rect upArrow{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + 2), 8, 8};
-            renderer.fillRect(upArrow, 0xBDF7);
-            renderer.drawRect(upArrow, 0x2104);
-            renderer.drawText(static_cast<int16_t>(upArrow.x + 2), static_cast<int16_t>(upArrow.y + 1), "^", 0x0000, 0xBDF7);
+            if (!clip || rectsIntersect(upArrow, *clip)) {
+                renderer.fillRect(upArrow, 0xBDF7);
+                renderer.drawRect(upArrow, 0x2104);
+                renderer.drawText(static_cast<int16_t>(upArrow.x + 2), static_cast<int16_t>(upArrow.y + 1), "^", 0x0000, 0xBDF7);
+            }
         }
         if (scrollY_ < maxScroll) {
             const Rect downArrow{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + viewport.h - statusH - 10), 8, 8};
-            renderer.fillRect(downArrow, 0xBDF7);
-            renderer.drawRect(downArrow, 0x2104);
-            renderer.drawText(static_cast<int16_t>(downArrow.x + 2), static_cast<int16_t>(downArrow.y + 1), "v", 0x0000, 0xBDF7);
+            if (!clip || rectsIntersect(downArrow, *clip)) {
+                renderer.fillRect(downArrow, 0xBDF7);
+                renderer.drawRect(downArrow, 0x2104);
+                renderer.drawText(static_cast<int16_t>(downArrow.x + 2), static_cast<int16_t>(downArrow.y + 1), "v", 0x0000, 0xBDF7);
+            }
         }
     }
 }

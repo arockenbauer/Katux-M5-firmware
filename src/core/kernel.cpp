@@ -7,6 +7,7 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -15,9 +16,12 @@
 namespace katux::core {
 
 static const char* kConfigPath = "/katux.cfg";
+static const char* kBootFlagsKey = "boot_flags";
 static constexpr uint8_t kBootFlagSafeMode = 0x01;
 static constexpr uint8_t kBootFlagBios = 0x02;
+static constexpr uint8_t kBootFlagRescue = 0x04;
 static constexpr uint16_t kLockUnlockAnimDurationMs = 280;
+static constexpr uint32_t kRescueHoldMs = 7000U;
 RTC_DATA_ATTR static uint8_t gBootFlags = 0;
 
 Kernel& kernel() {
@@ -34,13 +38,6 @@ bool Kernel::begin() {
     StickCP2.Display.setBrightness(90);
 
     StickCP2.update();
-    const uint8_t bootFlags = gBootFlags;
-    gBootFlags = 0;
-    safeMode_ = (bootFlags & kBootFlagSafeMode) != 0;
-    bootToBios_ = (bootFlags & kBootFlagBios) != 0;
-    if (!safeMode_) {
-        safeMode_ = StickCP2.BtnA.isPressed() && StickCP2.BtnB.isPressed();
-    }
 
     events_.begin();
     renderer_.begin();
@@ -58,6 +55,20 @@ bool Kernel::begin() {
     boot_.setTargetProgress(45);
 
     prefsReady_ = prefs_.begin("katux", false);
+
+    uint8_t bootFlags = gBootFlags;
+    gBootFlags = 0;
+    if (prefsReady_ && prefs_.isKey(kBootFlagsKey)) {
+        bootFlags = static_cast<uint8_t>(bootFlags | prefs_.getUChar(kBootFlagsKey, 0));
+        prefs_.remove(kBootFlagsKey);
+    }
+
+    safeMode_ = (bootFlags & kBootFlagSafeMode) != 0;
+    bootToBios_ = (bootFlags & kBootFlagBios) != 0;
+    bootToRescueBios_ = (bootFlags & kBootFlagRescue) != 0;
+    if (!safeMode_) {
+        safeMode_ = StickCP2.BtnA.isPressed() && StickCP2.BtnB.isPressed();
+    }
 
     const esp_partition_t* spiffsPartition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
     if (spiffsPartition) {
@@ -80,7 +91,15 @@ bool Kernel::begin() {
     e.type = fsReady_ ? EventType::FsMounted : EventType::FsMountFailed;
     events_.push(e);
 
-    mode_ = Mode::Boot;
+    if (bootToRescueBios_ || bootToBios_) {
+        bios_.setRescueMode(bootToRescueBios_);
+        bios_.begin();
+        bootToBios_ = false;
+        bootToRescueBios_ = false;
+        mode_ = Mode::Bios;
+    } else {
+        mode_ = Mode::Boot;
+    }
     desktopFullRedrawRequested_ = true;
     hasCursorSnapshot_ = false;
     lastBootProgress_ = 255;
@@ -95,6 +114,11 @@ bool Kernel::begin() {
     lastLockAnimOffset_ = 0;
     lockWakeGuardUntilMs_ = 0;
     lockUnlockAnimStartMs_ = 0;
+    btnBHoldStartMs_ = 0;
+    rescueShortcutLatched_ = false;
+    rescueHoldHintVisible_ = false;
+    rescueHoldHintRemainingSec_ = 255;
+    modeBeforeBios_ = Mode::Desktop;
     initialized_ = true;
     return true;
 }
@@ -105,6 +129,7 @@ void Kernel::update() {
     StickCP2.update();
 
     const uint32_t now = millis();
+    updateRescueShortcut(now);
     if (!power_.isSleeping()) {
         input_.update();
 
@@ -153,6 +178,10 @@ void Kernel::update() {
         desktopWarmupFrames_ = 0;
         hasCursorSnapshot_ = false;
         desktopFullRedrawRequested_ = true;
+        btnBHoldStartMs_ = 0;
+        rescueShortcutLatched_ = false;
+        rescueHoldHintVisible_ = false;
+        rescueHoldHintRemainingSec_ = 255;
         events_.clear();
         input_.resetState();
     }
@@ -197,13 +226,17 @@ void Kernel::handleEvent(const Event& event) {
     if (event.type == EventType::ShutdownRequest) {
         const int32_t mode = event.data0;
         if (mode == 1) {
-            esp_restart();
+            rebootWithLoading(0);
         } else if (mode == 2) {
             esp_sleep_enable_timer_wakeup(20ULL * 1000000ULL);
             esp_light_sleep_start();
         } else if (mode == 3) {
             esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
             esp_deep_sleep_start();
+        } else if (mode == 4) {
+            rebootWithLoading(kBootFlagBios);
+        } else if (mode == 5) {
+            rebootWithLoading(kBootFlagRescue);
         } else {
             StickCP2.Power.powerOff();
         }
@@ -211,14 +244,12 @@ void Kernel::handleEvent(const Event& event) {
     }
 
     if (event.type == EventType::ShortcutSafeMode) {
-        gBootFlags = static_cast<uint8_t>(gBootFlags | kBootFlagSafeMode);
-        esp_restart();
+        rebootWithLoading(kBootFlagSafeMode);
         return;
     }
 
     if (event.type == EventType::OpenBios) {
-        gBootFlags = static_cast<uint8_t>(gBootFlags | kBootFlagBios);
-        esp_restart();
+        rebootWithLoading(kBootFlagBios);
         return;
     }
 
@@ -231,9 +262,11 @@ void Kernel::handleEvent(const Event& event) {
 
     if (mode_ == Mode::Boot) {
         if (event.type == EventType::BootComplete) {
-            if (bootToBios_) {
+            if (bootToRescueBios_ || bootToBios_) {
+                bios_.setRescueMode(bootToRescueBios_);
                 bios_.begin();
                 bootToBios_ = false;
+                bootToRescueBios_ = false;
                 mode_ = Mode::Bios;
                 desktopFullRedrawRequested_ = true;
                 hasCursorSnapshot_ = false;
@@ -270,10 +303,7 @@ void Kernel::handleEvent(const Event& event) {
                 lockUnlockAnimStartMs_ = event.timestampMs;
                 desktopFullRedrawRequested_ = true;
             } else {
-                mode_ = Mode::Desktop;
-                desktopFullRedrawRequested_ = true;
-                hasCursorSnapshot_ = false;
-                desktopWarmupFrames_ = 12;
+                enterDesktopFromLock();
             }
             return;
         }
@@ -284,10 +314,7 @@ void Kernel::handleEvent(const Event& event) {
                     lockUnlockAnimating_ = false;
                     lockAnimDesktopReady_ = false;
                     lastLockAnimOffset_ = 0;
-                    mode_ = Mode::Desktop;
-                    desktopFullRedrawRequested_ = true;
-                    hasCursorSnapshot_ = false;
-                    desktopWarmupFrames_ = 12;
+                    enterDesktopFromLock();
                 }
                 return;
             }
@@ -316,12 +343,64 @@ void Kernel::handleEvent(const Event& event) {
 
         bios_.onEvent(event);
 
-        if (bios_.takeResetRequest()) {
+        if (bios_.takeRebootRequest()) {
+            rebootWithLoading(0);
+            return;
+        }
+
+        bool wipeStorage = false;
+        if (bios_.takeFactoryResetRequest(wipeStorage)) {
+            if (wipeStorage) {
+                boot_.begin();
+                boot_.setTargetProgress(30);
+                uint32_t phaseStart = millis();
+                while (millis() - phaseStart < 180U) {
+                    boot_.update();
+                    boot_.render(renderer_);
+                    renderer_.present();
+                    delay(1);
+                }
+            }
+
+            resetConfig();
+
+            if (wipeStorage) {
+                boot_.setTargetProgress(70);
+                uint32_t phaseStart = millis();
+                while (millis() - phaseStart < 180U) {
+                    boot_.update();
+                    boot_.render(renderer_);
+                    renderer_.present();
+                    delay(1);
+                }
+
+                wipePersistentStorage();
+
+                boot_.setTargetProgress(95);
+                phaseStart = millis();
+                while (millis() - phaseStart < 120U) {
+                    boot_.update();
+                    boot_.render(renderer_);
+                    renderer_.present();
+                    delay(1);
+                }
+            }
+
+            rebootWithLoading(0);
+            return;
+        }
+
+        if (!bios_.rescueMode() && bios_.takeResetRequest()) {
             resetConfig();
             desktopFullRedrawRequested_ = true;
         }
 
         if (bios_.shouldExit()) {
+            if (bios_.rescueMode()) {
+                rebootWithLoading(0);
+                return;
+            }
+
             config_.darkTheme = bios_.darkThemeEnabled();
             config_.debugOverlay = bios_.debugOverlayEnabled();
             applyConfig();
@@ -351,11 +430,14 @@ void Kernel::handleEvent(const Event& event) {
             } else if (key == SettingKey::AutoTime) {
                 config_.autoTime = event.data1 != 0;
                 timeSynced_ = false;
+                lastTimeSyncAttemptMs_ = 0;
             } else if (key == SettingKey::TimezoneOffset) {
                 int32_t tz = event.data1;
                 if (tz < -12) tz = -12;
                 if (tz > 14) tz = 14;
                 config_.timezoneOffset = static_cast<int8_t>(tz);
+                timeSynced_ = false;
+                lastTimeSyncAttemptMs_ = 0;
             } else if (key == SettingKey::ManualYear) {
                 int32_t v = event.data1;
                 if (v < 2024) v = 2024;
@@ -495,6 +577,41 @@ void Kernel::render() {
         }
     }
 
+    bool showRescueHint = false;
+    uint8_t hintRemainingSec = 0;
+    if (StickCP2.BtnB.isPressed() && btnBHoldStartMs_ > 0 && !rescueShortcutLatched_) {
+        const uint32_t holdMs = millis() - btnBHoldStartMs_;
+        if (holdMs >= 4000U && holdMs < kRescueHoldMs) {
+            showRescueHint = true;
+            hintRemainingSec = static_cast<uint8_t>((kRescueHoldMs - holdMs + 999U) / 1000U);
+            if (hintRemainingSec == 0) hintRemainingSec = 1;
+        }
+    }
+
+    if (rescueHoldHintVisible_ && (!showRescueHint || hintRemainingSec != rescueHoldHintRemainingSec_)) {
+        desktop_.renderClip(renderer_, rescueHoldHintRect_);
+        if (!(rescueHoldHintRect_.x + rescueHoldHintRect_.w <= cx || cx + kCursorWidth <= rescueHoldHintRect_.x ||
+              rescueHoldHintRect_.y + rescueHoldHintRect_.h <= cy || cy + kCursorHeight <= rescueHoldHintRect_.y)) {
+            cursorAreaTouched = true;
+        }
+        rescueHoldHintVisible_ = false;
+        rescueHoldHintRemainingSec_ = 255;
+    }
+
+    if (showRescueHint) {
+        char hint[56] = "";
+        snprintf(hint, sizeof(hint), "Press %u more seconds to reboot...", static_cast<unsigned>(hintRemainingSec));
+        renderer_.fillRect(rescueHoldHintRect_, 0x18C3);
+        renderer_.drawRect(rescueHoldHintRect_, 0xFFFF);
+        renderer_.drawText(static_cast<int16_t>(rescueHoldHintRect_.x + 4), static_cast<int16_t>(rescueHoldHintRect_.y + 2), hint, 0xFFFF, 0x18C3);
+        if (!(rescueHoldHintRect_.x + rescueHoldHintRect_.w <= cx || cx + kCursorWidth <= rescueHoldHintRect_.x ||
+              rescueHoldHintRect_.y + rescueHoldHintRect_.h <= cy || cy + kCursorHeight <= rescueHoldHintRect_.y)) {
+            cursorAreaTouched = true;
+        }
+        rescueHoldHintVisible_ = true;
+        rescueHoldHintRemainingSec_ = hintRemainingSec;
+    }
+
     const bool redrawCursor = !hasCursorSnapshot_ || cursorMoved || cursorAreaTouched;
     katux::graphics::Rect cursorRect{cx, cy, kCursorWidth, kCursorHeight};
     const bool cursorVisible = renderer_.normalize(cursorRect);
@@ -588,6 +705,64 @@ void Kernel::renderLockScreen(int16_t yOffset, bool hasTime, const struct tm* ti
     const int16_t hintY = static_cast<int16_t>(118 + yOffset);
     if (hintY >= 0 && hintY <= static_cast<int16_t>(height - 8)) {
         renderer_.drawText(10, hintY, "BtnA unlock", 0xBDF7, 0xD5B7);
+    }
+}
+
+void Kernel::updateRescueShortcut(uint32_t now) {
+    if (mode_ == Mode::Boot || mode_ == Mode::Bios || mode_ == Mode::Bsod) return;
+
+    if (StickCP2.BtnB.isPressed()) {
+        if (btnBHoldStartMs_ == 0) {
+            btnBHoldStartMs_ = now;
+        }
+        if (!rescueShortcutLatched_ && now - btnBHoldStartMs_ >= kRescueHoldMs) {
+            rescueShortcutLatched_ = true;
+            rebootWithLoading(kBootFlagRescue);
+        }
+    } else {
+        btnBHoldStartMs_ = 0;
+        rescueShortcutLatched_ = false;
+    }
+}
+
+void Kernel::rebootWithLoading(uint8_t bootFlags) {
+    gBootFlags = bootFlags;
+    if (prefsReady_) {
+        if (bootFlags == 0) {
+            prefs_.remove(kBootFlagsKey);
+        } else {
+            prefs_.putUChar(kBootFlagsKey, bootFlags);
+        }
+    }
+
+    boot_.begin();
+    boot_.setTargetProgress(100);
+    const uint32_t start = millis();
+    while (millis() - start < 500U) {
+        boot_.update();
+        boot_.render(renderer_);
+        renderer_.present();
+        delay(1);
+    }
+
+    esp_restart();
+}
+
+void Kernel::enterDesktopFromLock() {
+    mode_ = Mode::Desktop;
+    desktop_.invalidateAll();
+    desktopFullRedrawRequested_ = true;
+    hasCursorSnapshot_ = false;
+    desktopWarmupFrames_ = 12;
+    input_.resetState();
+}
+
+void Kernel::wipePersistentStorage() {
+    if (prefsReady_) {
+        prefs_.clear();
+    }
+    if (fsReady_) {
+        SPIFFS.format();
     }
 }
 
@@ -725,6 +900,7 @@ void Kernel::applyConfig() {
     input_.setCursorSpeed(config_.cursorSpeed);
     power_.setBrightness(config_.brightness);
     applyPerformanceProfile(config_.performanceProfile);
+    applyTimezoneOffset();
     if (!config_.autoTime) {
         applyManualTime();
     } else {
@@ -734,7 +910,21 @@ void Kernel::applyConfig() {
 }
 
 void Kernel::syncDesktopState() {
-    desktop_.setSystemState(config_.darkTheme, config_.brightness, config_.cursorSpeed, config_.performanceProfile, config_.debugOverlay, config_.animationsEnabled);
+    desktop_.setSystemState(config_.darkTheme, config_.brightness, config_.cursorSpeed, config_.performanceProfile, config_.debugOverlay,
+                            config_.animationsEnabled, config_.autoTime, config_.timezoneOffset, config_.manualYear, config_.manualMonth,
+                            config_.manualDay, config_.manualHour, config_.manualMinute);
+}
+
+void Kernel::applyTimezoneOffset() {
+    int8_t offset = config_.timezoneOffset;
+    if (offset < -12) offset = -12;
+    if (offset > 14) offset = 14;
+    config_.timezoneOffset = offset;
+
+    char tzValue[12] = "";
+    snprintf(tzValue, sizeof(tzValue), "UTC%+d", -static_cast<int>(offset));
+    setenv("TZ", tzValue, 1);
+    tzset();
 }
 
 void Kernel::applyManualTime() {
@@ -745,9 +935,10 @@ void Kernel::applyManualTime() {
     tmv.tm_hour = static_cast<int>(config_.manualHour);
     tmv.tm_min = static_cast<int>(config_.manualMinute);
     tmv.tm_sec = 0;
-    time_t localTs = mktime(&tmv);
-    if (localTs < 0) return;
-    time_t utcTs = localTs - static_cast<time_t>(config_.timezoneOffset) * 3600;
+
+    time_t utcTs = mktime(&tmv);
+    if (utcTs < 0) return;
+
     timeval tv;
     tv.tv_sec = utcTs;
     tv.tv_usec = 0;
@@ -761,15 +952,9 @@ void Kernel::trySyncTime(uint32_t now) {
 
     lastTimeSyncAttemptMs_ = now;
 
-    configTzTime("UTC0", "pool.ntp.org", "time.nist.gov", "time.google.com");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
     struct tm tmv;
     if (getLocalTime(&tmv, 2500)) {
-        time_t localTs = mktime(&tmv);
-        time_t adjustedTs = localTs + static_cast<time_t>(config_.timezoneOffset) * 3600;
-        timeval tv;
-        tv.tv_sec = adjustedTs;
-        tv.tv_usec = 0;
-        settimeofday(&tv, nullptr);
         timeSynced_ = true;
         return;
     }
@@ -831,14 +1016,27 @@ void Kernel::trySyncTime(uint32_t now) {
     httpTm.tm_min = mm;
     httpTm.tm_sec = ss;
 
+    char previousTz[32] = "";
+    const char* tz = getenv("TZ");
+    if (tz) {
+        strlcpy(previousTz, tz, sizeof(previousTz));
+    }
+    setenv("TZ", "UTC0", 1);
+    tzset();
     time_t utcTs = mktime(&httpTm);
+    if (previousTz[0]) {
+        setenv("TZ", previousTz, 1);
+    } else {
+        setenv("TZ", "UTC0", 1);
+    }
+    tzset();
+
     if (utcTs < 0) {
         return;
     }
 
-    time_t adjustedTs = utcTs + static_cast<time_t>(config_.timezoneOffset) * 3600;
     timeval tv;
-    tv.tv_sec = adjustedTs;
+    tv.tv_sec = utcTs;
     tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
     timeSynced_ = true;
