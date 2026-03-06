@@ -190,6 +190,107 @@ static bool hasHtmlExt(const char* s) {
     return strcmp(ext, "html") == 0 || strcmp(ext, "htm") == 0;
 }
 
+struct BrowserRenderLayout {
+    Rect headerSection{0, 0, 0, 0};
+    Rect urlBar{0, 0, 0, 0};
+    Rect favBtn{0, 0, 0, 0};
+    Rect backBtn{0, 0, 0, 0};
+    Rect fwdBtn{0, 0, 0, 0};
+    Rect prevBtn{0, 0, 0, 0};
+    Rect nextBtn{0, 0, 0, 0};
+    Rect openBtn{0, 0, 0, 0};
+    Rect upBtn{0, 0, 0, 0};
+    Rect downBtn{0, 0, 0, 0};
+    Rect sidePanel{0, 0, 0, 0};
+    Rect viewport{0, 0, 0, 0};
+    Rect statusBar{0, 0, 0, 0};
+    Rect contentRect{0, 0, 0, 0};
+    Rect schemeBadge{0, 0, 0, 0};
+    Rect scrollUp{0, 0, 0, 0};
+    Rect scrollDown{0, 0, 0, 0};
+    int16_t statusH = 0;
+    int16_t contentTop = 0;
+    int16_t contentBottom = 0;
+    int16_t visibleH = 0;
+};
+
+static BrowserRenderLayout buildBrowserRenderLayout(const Rect& body, bool statusVisible) {
+    BrowserRenderLayout layout{};
+    layout.headerSection = Rect{body.x, body.y, body.w, 28};
+    layout.urlBar = Rect{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 2), static_cast<int16_t>(body.w - 26), 12};
+    layout.favBtn = Rect{static_cast<int16_t>(body.x + body.w - 20), static_cast<int16_t>(body.y + 2), 16, 12};
+    layout.backBtn = Rect{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 16), 18, 10};
+    layout.fwdBtn = Rect{static_cast<int16_t>(body.x + 24), static_cast<int16_t>(body.y + 16), 18, 10};
+    layout.prevBtn = Rect{static_cast<int16_t>(body.x + 44), static_cast<int16_t>(body.y + 16), 18, 10};
+    layout.nextBtn = Rect{static_cast<int16_t>(body.x + 64), static_cast<int16_t>(body.y + 16), 18, 10};
+    layout.openBtn = Rect{static_cast<int16_t>(body.x + 86), static_cast<int16_t>(body.y + 16), 28, 10};
+    layout.upBtn = Rect{static_cast<int16_t>(body.x + 118), static_cast<int16_t>(body.y + 16), 14, 10};
+    layout.downBtn = Rect{static_cast<int16_t>(body.x + 134), static_cast<int16_t>(body.y + 16), 14, 10};
+
+    const int16_t mainTop = static_cast<int16_t>(body.y + 30);
+    const int16_t mainH = static_cast<int16_t>(body.h - 32);
+    layout.sidePanel = Rect{static_cast<int16_t>(body.x + 4), mainTop, 70, mainH};
+    layout.viewport = Rect{static_cast<int16_t>(layout.sidePanel.x + layout.sidePanel.w + 2), mainTop,
+                           static_cast<int16_t>(body.w - layout.sidePanel.w - 8), mainH};
+    layout.statusH = statusVisible ? 12 : 0;
+    layout.statusBar = Rect{layout.viewport.x, static_cast<int16_t>(layout.viewport.y + layout.viewport.h - layout.statusH), layout.viewport.w,
+                            layout.statusH};
+    layout.contentTop = static_cast<int16_t>(layout.viewport.y + 2);
+    layout.contentBottom = static_cast<int16_t>(layout.viewport.y + layout.viewport.h - layout.statusH);
+    layout.visibleH = static_cast<int16_t>(layout.contentBottom - layout.contentTop);
+    layout.contentRect = Rect{layout.viewport.x, layout.contentTop, layout.viewport.w, layout.visibleH};
+    layout.schemeBadge = Rect{static_cast<int16_t>(layout.urlBar.x + 1), static_cast<int16_t>(layout.urlBar.y + 1), 10, 10};
+    layout.scrollUp = Rect{static_cast<int16_t>(layout.viewport.x + layout.viewport.w - 10), static_cast<int16_t>(layout.viewport.y + 2), 8, 8};
+    layout.scrollDown = Rect{static_cast<int16_t>(layout.viewport.x + layout.viewport.w - 10),
+                             static_cast<int16_t>(layout.viewport.y + layout.viewport.h - layout.statusH - 10), 8, 8};
+    return layout;
+}
+
+static Rect clipRect(const Rect& rect, const Rect* clip) {
+    if (!clip) return rect;
+    return rectIntersection(rect, *clip);
+}
+
+static void fillRectClipped(katux::graphics::Renderer& renderer, const Rect& rect, uint16_t color, const Rect* clip) {
+    const Rect paint = clipRect(rect, clip);
+    if (paint.w > 0 && paint.h > 0) {
+        renderer.fillRect(paint, color);
+    }
+}
+
+static void drawFrameClipped(katux::graphics::Renderer& renderer, const Rect& rect, uint16_t color, const Rect* clip) {
+    if (rect.w <= 0 || rect.h <= 0) return;
+    fillRectClipped(renderer, Rect{rect.x, rect.y, rect.w, 1}, color, clip);
+    if (rect.h > 1) {
+        fillRectClipped(renderer, Rect{rect.x, static_cast<int16_t>(rect.y + rect.h - 1), rect.w, 1}, color, clip);
+    }
+    if (rect.h > 2) {
+        const int16_t sideH = static_cast<int16_t>(rect.h - 2);
+        fillRectClipped(renderer, Rect{rect.x, static_cast<int16_t>(rect.y + 1), 1, sideH}, color, clip);
+        if (rect.w > 1) {
+            fillRectClipped(renderer, Rect{static_cast<int16_t>(rect.x + rect.w - 1), static_cast<int16_t>(rect.y + 1), 1, sideH}, color, clip);
+        }
+    }
+}
+
+static void drawTextClipped(katux::graphics::Renderer& renderer,
+                            int16_t x,
+                            int16_t y,
+                            const char* text,
+                            uint16_t fg,
+                            uint16_t bg,
+                            const Rect* clip,
+                            int16_t glyphW = 6,
+                            int16_t glyphH = 8) {
+    if (!text || !text[0]) return;
+    const int16_t len = static_cast<int16_t>(strlen(text));
+    if (len <= 0) return;
+    const Rect bounds{x, y, static_cast<int16_t>(len * glyphW), glyphH};
+    if (!clip || rectsIntersect(bounds, *clip)) {
+        renderer.drawText(x, y, text, fg, bg);
+    }
+}
+
 }  // namespace
 
 class NetworkConn {
@@ -220,13 +321,13 @@ bool NetworkManager::parseUrl(const char* url) {
     const char* pathStart = strchr(hostStart, '/');
     if (!pathStart) {
         copyTrim(host_, sizeof(host_), hostStart, sizeof(host_) - 1);
-        strlcpy(path_, "/", sizeof(path_));
+        strlcpy(path_, "/", kBrowserUrlMaxLen);
     } else {
         const size_t hostLen = static_cast<size_t>(pathStart - hostStart);
         if (hostLen == 0 || hostLen >= sizeof(host_)) return false;
         memcpy(host_, hostStart, hostLen);
         host_[hostLen] = '\0';
-        copyTrim(path_, sizeof(path_), pathStart, sizeof(path_) - 1);
+        copyTrim(path_, kBrowserUrlMaxLen, pathStart, kBrowserUrlMaxLen - 1);
     }
     return host_[0] != '\0';
 }
@@ -353,7 +454,7 @@ bool NetworkManager::parseHeadersStep() {
                 continue;
             }
 
-            char lower[180] = "";
+            char lower[256] = "";
             strlcpy(lower, headerLine_, sizeof(lower));
             toLowerInPlace(lower);
             if (startsWith(lower, "content-type:")) {
@@ -369,7 +470,7 @@ bool NetworkManager::parseHeadersStep() {
             } else if (startsWith(lower, "location:")) {
                 const char* v = headerLine_ + 9;
                 while (*v == ' ' || *v == '\t') ++v;
-                copyTrim(redirectLocation_, sizeof(redirectLocation_), v, sizeof(redirectLocation_) - 1);
+                copyTrim(redirectLocation_, kBrowserUrlMaxLen, v, kBrowserUrlMaxLen - 1);
             }
             headerLineLen_ = 0;
             continue;
@@ -1180,6 +1281,7 @@ void BrowserApp::begin(const char* initialUrl, const char* const* presets, uint8
     activeHref_[0] = '\0';
     openImagePending_ = false;
     pendingImageSrc_[0] = '\0';
+    dirtyChrome_ = true;
     dirtyProgress_ = true;
     dirtyContent_ = true;
     lastProgress_ = 0;
@@ -1289,6 +1391,7 @@ void BrowserApp::clearDocument() {
     formKeyboardInitial_[0] = '\0';
     inTextareaTag_ = false;
     activeTextareaControl_ = 0xFF;
+    dirtyChrome_ = true;
     dirtyProgress_ = true;
     dirtyContent_ = true;
     lastProgress_ = 0;
@@ -1324,6 +1427,7 @@ void BrowserApp::pushHistory(const char* url) {
         copyTrim(history_[historyCount_], sizeof(history_[0]), url, sizeof(history_[0]) - 1);
         ++historyCount_;
         historyIndex_ = static_cast<int8_t>(historyCount_ - 1U);
+        dirtyChrome_ = true;
         return;
     }
 
@@ -1332,23 +1436,88 @@ void BrowserApp::pushHistory(const char* url) {
     }
     copyTrim(history_[kHistoryMax - 1], sizeof(history_[0]), url, sizeof(history_[0]) - 1);
     historyIndex_ = static_cast<int8_t>(kHistoryMax - 1);
+    dirtyChrome_ = true;
+}
+
+bool BrowserApp::normalizeUrl(const char* url, char* out, size_t outLen) const {
+    if (!out || outLen == 0) return false;
+    out[0] = '\0';
+    if (!url || !url[0]) return false;
+
+    if (isHttpUrl(url)) {
+        copyTrim(out, outLen, url, outLen - 1);
+    } else if (hasHtmlExt(url) || strchr(url, '/')) {
+        snprintf(out, outLen, "http://%s", url);
+    } else {
+        snprintf(out, outLen, "http://%s/", url);
+    }
+    return out[0] != '\0';
+}
+
+bool BrowserApp::toggleUrlScheme(const char* url, char* out, size_t outLen) const {
+    if (!out || outLen == 0) return false;
+    out[0] = '\0';
+    if (!url || !url[0]) return false;
+
+    if (startsWith(url, "https://")) {
+        snprintf(out, outLen, "http://%s", url + 8);
+    } else if (startsWith(url, "http://")) {
+        snprintf(out, outLen, "https://%s", url + 7);
+    } else {
+        return false;
+    }
+    return out[0] != '\0';
+}
+
+bool BrowserApp::tryAlternateScheme() {
+    if (schemeFallbackTried_) return false;
+
+    char fallbackUrl[kUrlMaxLen] = "";
+    if (!toggleUrlScheme(url_, fallbackUrl, sizeof(fallbackUrl))) return false;
+
+    char previousUrl[kUrlMaxLen] = "";
+    copyTrim(previousUrl, sizeof(previousUrl), url_, sizeof(previousUrl) - 1);
+    schemeFallbackTried_ = true;
+    clearDocument();
+
+    if (!network_.open(fallbackUrl)) {
+        copyTrim(url_, sizeof(url_), previousUrl, sizeof(previousUrl) - 1);
+        copyTrim(baseHref_, sizeof(baseHref_), previousUrl, sizeof(previousUrl) - 1);
+        strlcpy(status_, network_.statusText(), sizeof(status_));
+        loading_ = false;
+        loaded_ = false;
+        dirtyChrome_ = true;
+        dirtyProgress_ = true;
+        dirtyContent_ = true;
+        return false;
+    }
+
+    copyTrim(url_, sizeof(url_), fallbackUrl, sizeof(fallbackUrl) - 1);
+    dirtyChrome_ = true;
+    copyTrim(baseHref_, sizeof(baseHref_), fallbackUrl, sizeof(fallbackUrl) - 1);
+    if (historyIndex_ >= 0 && historyIndex_ < static_cast<int8_t>(historyCount_) && strcmp(history_[historyIndex_], previousUrl) == 0) {
+        copyTrim(history_[historyIndex_], sizeof(history_[0]), fallbackUrl, sizeof(fallbackUrl) - 1);
+    }
+    loading_ = true;
+    loaded_ = false;
+    loadStartMs_ = millis();
+    strlcpy(status_, startsWith(fallbackUrl, "https://") ? "Retry HTTPS" : "Retry HTTP", sizeof(status_));
+    dirtyProgress_ = true;
+    dirtyContent_ = true;
+    return true;
 }
 
 void BrowserApp::openUrl(const char* url, bool addToHistory) {
     if (!url || !url[0]) return;
 
     char normalized[kUrlMaxLen] = "";
-    if (isHttpUrl(url)) {
-        copyTrim(normalized, sizeof(normalized), url, sizeof(normalized) - 1);
-    } else if (hasHtmlExt(url) || strchr(url, '/')) {
-        snprintf(normalized, sizeof(normalized), "http://%s", url);
-    } else {
-        snprintf(normalized, sizeof(normalized), "http://%s/", url);
-    }
+    if (!normalizeUrl(url, normalized, sizeof(normalized))) return;
 
     copyTrim(url_, sizeof(url_), normalized, sizeof(url_) - 1);
+    dirtyChrome_ = true;
     clearDocument();
     copyTrim(baseHref_, sizeof(baseHref_), url_, sizeof(baseHref_) - 1);
+    schemeFallbackTried_ = false;
     if (addToHistory) {
         redirectDepth_ = 0;
     }
@@ -1364,6 +1533,12 @@ void BrowserApp::openUrl(const char* url, bool addToHistory) {
     }
 
     if (!network_.open(url_)) {
+        if (tryAlternateScheme()) {
+            if (addToHistory) {
+                pushHistory(url_);
+            }
+            return;
+        }
         strlcpy(status_, network_.statusText(), sizeof(status_));
         loading_ = false;
         loaded_ = false;
@@ -1385,6 +1560,7 @@ void BrowserApp::openUrl(const char* url, bool addToHistory) {
 void BrowserApp::setCurrentUrlText(const char* url) {
     if (!url) return;
     copyTrim(url_, sizeof(url_), url, sizeof(url_) - 1);
+    dirtyChrome_ = true;
 }
 
 void BrowserApp::openPreset(int8_t delta) {
@@ -1396,11 +1572,42 @@ void BrowserApp::openPreset(int8_t delta) {
     openUrl(presets_[presetIndex_], true);
 }
 
+void BrowserApp::openHome() {
+    if (presets_ && presetCount_ > 0) {
+        presetIndex_ = 0;
+        openUrl(presets_[0], true);
+    }
+}
+
+void BrowserApp::reload() {
+    if (!url_[0]) return;
+    redirectDepth_ = 0;
+    openUrl(url_, false);
+}
+
+void BrowserApp::stopLoading() {
+    if (!loading_ && !externalLoading_ && externalQueueCount_ == 0) return;
+    network_.reset();
+    loading_ = false;
+    loaded_ = layout_.blockCount() > 0;
+    schemeFallbackTried_ = false;
+    redirectDepth_ = 0;
+    memset(externalQueue_, 0, sizeof(externalQueue_));
+    externalQueueCount_ = 0;
+    externalLoading_ = false;
+    externalLoadingUrl_[0] = '\0';
+    strlcpy(status_, "Stopped", sizeof(status_));
+    statusActivityUntilMs_ = millis() + 2800U;
+    dirtyChrome_ = true;
+    dirtyProgress_ = true;
+}
+
 void BrowserApp::navigateHistory(int8_t step) {
     if (historyCount_ == 0 || step == 0) return;
     const int16_t next = static_cast<int16_t>(historyIndex_) + step;
     if (next < 0 || next >= historyCount_) return;
     historyIndex_ = static_cast<int8_t>(next);
+    dirtyChrome_ = true;
     openUrl(history_[historyIndex_], false);
 }
 
@@ -1440,6 +1647,9 @@ void BrowserApp::toggleFavorite() {
             }
             if (favoriteCount_ > 0) --favoriteCount_;
             strlcpy(status_, "Favorite removed", sizeof(status_));
+            statusActivityUntilMs_ = millis() + 2800U;
+            dirtyChrome_ = true;
+            dirtyProgress_ = true;
             return;
         }
     }
@@ -1454,6 +1664,9 @@ void BrowserApp::toggleFavorite() {
         copyTrim(favorites_[kFavoriteMax - 1], sizeof(favorites_[0]), url_, sizeof(favorites_[0]) - 1);
     }
     strlcpy(status_, "Favorite added", sizeof(status_));
+    statusActivityUntilMs_ = millis() + 2800U;
+    dirtyChrome_ = true;
+    dirtyProgress_ = true;
 }
 
 bool BrowserApp::isFavorite(const char* url) const {
@@ -2594,6 +2807,7 @@ bool BrowserApp::executeJsStatement(const char* stmt, uint8_t depth) {
             if (extractJsStringLiteral(eq + 1, title, sizeof(title))) {
                 copyTrim(title_, sizeof(title_), title, sizeof(title_) - 1);
                 copyTrim(status_, sizeof(status_), title, sizeof(status_) - 1);
+                dirtyChrome_ = true;
                 dirtyProgress_ = true;
             }
         }
@@ -3020,6 +3234,7 @@ void BrowserApp::processToken(const Token& tok) {
             if (titleBuffer_[0]) {
                 copyTrim(title_, sizeof(title_), titleBuffer_, sizeof(title_) - 1);
                 copyTrim(status_, sizeof(status_), titleBuffer_, sizeof(status_) - 1);
+                dirtyChrome_ = true;
                 dirtyProgress_ = true;
             }
             return;
@@ -3367,11 +3582,17 @@ void BrowserApp::tick(uint32_t nowMs) {
                 if (redirectDepth_ < 4 && resolveUrl(url_, network_.redirectLocation(), nextUrl, sizeof(nextUrl))) {
                     ++redirectDepth_;
                     copyTrim(url_, sizeof(url_), nextUrl, sizeof(url_) - 1);
+                    dirtyChrome_ = true;
                     clearDocument();
+                    copyTrim(baseHref_, sizeof(baseHref_), url_, sizeof(baseHref_) - 1);
+                    schemeFallbackTried_ = false;
                     if (network_.open(url_)) {
                         loading_ = true;
                         loaded_ = false;
                         strlcpy(status_, "Redirecting", sizeof(status_));
+                        return;
+                    }
+                    if (tryAlternateScheme()) {
                         return;
                     }
                 }
@@ -3389,6 +3610,9 @@ void BrowserApp::tick(uint32_t nowMs) {
             loading_ = false;
             loaded_ = true;
         } else if (network_.state() == NetState::Error) {
+            if (tryAlternateScheme()) {
+                return;
+            }
             loading_ = false;
             loaded_ = layout_.blockCount() > 0;
         }
@@ -3406,6 +3630,9 @@ void BrowserApp::tick(uint32_t nowMs) {
     if (loading_ || isExternalLoading || strcmp(prevStatus, status_) != 0) {
         statusActivityUntilMs_ = nowMs + 2800U;
     }
+    if (wasLoading != loading_ || wasExternalLoading != isExternalLoading) {
+        dirtyChrome_ = true;
+    }
 
     updateProgressAnimation(nowMs);
 
@@ -3417,58 +3644,50 @@ void BrowserApp::tick(uint32_t nowMs) {
 }
 
 bool BrowserApp::handleClick(int16_t x, int16_t y, const Rect& body) {
-    const Rect favBtn{static_cast<int16_t>(body.x + body.w - 20), static_cast<int16_t>(body.y + 2), 16, 12};
-    const Rect backBtn{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect fwdBtn{static_cast<int16_t>(body.x + 24), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect prevBtn{static_cast<int16_t>(body.x + 44), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect nextBtn{static_cast<int16_t>(body.x + 64), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect openBtn{static_cast<int16_t>(body.x + 86), static_cast<int16_t>(body.y + 16), 28, 10};
-    const Rect upBtn{static_cast<int16_t>(body.x + 118), static_cast<int16_t>(body.y + 16), 14, 10};
-    const Rect downBtn{static_cast<int16_t>(body.x + 134), static_cast<int16_t>(body.y + 16), 14, 10};
-    const int16_t mainTop = static_cast<int16_t>(body.y + 30);
-    const int16_t mainH = static_cast<int16_t>(body.h - 32);
-    const Rect sidePanel{static_cast<int16_t>(body.x + 4), mainTop, 70, mainH};
-    const Rect viewport{static_cast<int16_t>(sidePanel.x + sidePanel.w + 2), mainTop, static_cast<int16_t>(body.w - sidePanel.w - 8), mainH};
-    const Rect scrollUp{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + 2), 8, 8};
-    const Rect scrollDown{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + viewport.h - 22), 8, 8};
+    const BrowserRenderLayout chrome = buildBrowserRenderLayout(body, statusBarVisibleNow(millis()));
+    const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
 
-    if (x >= favBtn.x && y >= favBtn.y && x < favBtn.x + favBtn.w && y < favBtn.y + favBtn.h) {
+    if (x >= chrome.favBtn.x && y >= chrome.favBtn.y && x < chrome.favBtn.x + chrome.favBtn.w && y < chrome.favBtn.y + chrome.favBtn.h) {
         toggleFavorite();
         return true;
     }
-    if (x >= backBtn.x && y >= backBtn.y && x < backBtn.x + backBtn.w && y < backBtn.y + backBtn.h) {
+    if (x >= chrome.backBtn.x && y >= chrome.backBtn.y && x < chrome.backBtn.x + chrome.backBtn.w && y < chrome.backBtn.y + chrome.backBtn.h) {
         navigateHistory(-1);
         return true;
     }
-    if (x >= fwdBtn.x && y >= fwdBtn.y && x < fwdBtn.x + fwdBtn.w && y < fwdBtn.y + fwdBtn.h) {
+    if (x >= chrome.fwdBtn.x && y >= chrome.fwdBtn.y && x < chrome.fwdBtn.x + chrome.fwdBtn.w && y < chrome.fwdBtn.y + chrome.fwdBtn.h) {
         navigateHistory(1);
         return true;
     }
-    if (x >= prevBtn.x && y >= prevBtn.y && x < prevBtn.x + prevBtn.w && y < prevBtn.y + prevBtn.h) {
-        openPreset(-1);
+    if (x >= chrome.prevBtn.x && y >= chrome.prevBtn.y && x < chrome.prevBtn.x + chrome.prevBtn.w && y < chrome.prevBtn.y + chrome.prevBtn.h) {
+        reload();
         return true;
     }
-    if (x >= nextBtn.x && y >= nextBtn.y && x < nextBtn.x + nextBtn.w && y < nextBtn.y + nextBtn.h) {
-        openPreset(1);
+    if (x >= chrome.nextBtn.x && y >= chrome.nextBtn.y && x < chrome.nextBtn.x + chrome.nextBtn.w && y < chrome.nextBtn.y + chrome.nextBtn.h) {
+        openHome();
         return true;
     }
-    if (x >= openBtn.x && y >= openBtn.y && x < openBtn.x + openBtn.w && y < openBtn.y + openBtn.h) {
-        openUrl(url_, true);
+    if (x >= chrome.openBtn.x && y >= chrome.openBtn.y && x < chrome.openBtn.x + chrome.openBtn.w && y < chrome.openBtn.y + chrome.openBtn.h) {
+        if (loadingVisual) {
+            stopLoading();
+        } else {
+            openUrl(url_, true);
+        }
         return true;
     }
-    if (x >= upBtn.x && y >= upBtn.y && x < upBtn.x + upBtn.w && y < upBtn.y + upBtn.h) {
+    if (x >= chrome.upBtn.x && y >= chrome.upBtn.y && x < chrome.upBtn.x + chrome.upBtn.w && y < chrome.upBtn.y + chrome.upBtn.h) {
         scroll(-14);
         return true;
     }
-    if (x >= downBtn.x && y >= downBtn.y && x < downBtn.x + downBtn.w && y < downBtn.y + downBtn.h) {
+    if (x >= chrome.downBtn.x && y >= chrome.downBtn.y && x < chrome.downBtn.x + chrome.downBtn.w && y < chrome.downBtn.y + chrome.downBtn.h) {
         scroll(14);
         return true;
     }
-    if (x >= scrollUp.x && y >= scrollUp.y && x < scrollUp.x + scrollUp.w && y < scrollUp.y + scrollUp.h) {
+    if (x >= chrome.scrollUp.x && y >= chrome.scrollUp.y && x < chrome.scrollUp.x + chrome.scrollUp.w && y < chrome.scrollUp.y + chrome.scrollUp.h) {
         scroll(-20);
         return true;
     }
-    if (x >= scrollDown.x && y >= scrollDown.y && x < scrollDown.x + scrollDown.w && y < scrollDown.y + scrollDown.h) {
+    if (x >= chrome.scrollDown.x && y >= chrome.scrollDown.y && x < chrome.scrollDown.x + chrome.scrollDown.w && y < chrome.scrollDown.y + chrome.scrollDown.h) {
         scroll(20);
         return true;
     }
@@ -3593,6 +3812,50 @@ bool BrowserApp::consumeOpenImageRequest(char* outSrc, size_t outLen) {
     return outSrc[0] != '\0';
 }
 
+void BrowserApp::rebuildTargets(const Rect& body, uint32_t nowMs) {
+    const BrowserRenderLayout layout = buildBrowserRenderLayout(body, statusBarVisibleNow(nowMs));
+    renderer_.clearTargets();
+
+    for (uint8_t i = 0; i < favoriteCount_ && i < 3; ++i) {
+        const Rect chip{static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 11 + i * 9),
+                        static_cast<int16_t>(layout.sidePanel.w - 4), 8};
+        renderer_.addTarget(chip, 4, i);
+    }
+
+    for (uint8_t i = 0; i < historyCount_ && i < 6; ++i) {
+        const Rect chip{static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 39 + i * 6),
+                        static_cast<int16_t>(layout.sidePanel.w - 4), 5};
+        renderer_.addTarget(chip, 5, i);
+    }
+
+    const int16_t docH = layout_.docHeight();
+    const int16_t maxScroll = docH > layout.visibleH ? static_cast<int16_t>(docH - layout.visibleH) : 0;
+    scrollY_ = clamp16(scrollY_, 0, maxScroll);
+
+    const LayoutEngine::Block* blocks = layout_.blocks();
+    const uint8_t n = layout_.blockCount();
+    for (uint8_t i = 0; i < n; ++i) {
+        const LayoutEngine::Block& b = blocks[i];
+        const int16_t y = static_cast<int16_t>(layout.contentTop + b.y - scrollY_);
+        if (y + b.h < layout.contentTop || y > layout.contentBottom) continue;
+
+        if (b.kind == 2) {
+            Rect ir{static_cast<int16_t>(layout.viewport.x + 3), y, static_cast<int16_t>(b.imageW), static_cast<int16_t>(b.imageH)};
+            if (ir.w > layout.viewport.w - 8) ir.w = static_cast<int16_t>(layout.viewport.w - 8);
+            if (ir.h > layout.contentBottom - ir.y) ir.h = static_cast<int16_t>(layout.contentBottom - ir.y);
+            if (ir.w > 0 && ir.h > 0) {
+                renderer_.addTarget(ir, 2, i);
+            }
+            continue;
+        }
+
+        if (b.kind != 1 && b.kind != 6) continue;
+        const int16_t rowH = b.style.fontSize == FontSize::Large ? 12 : (b.style.fontSize == FontSize::Small ? 8 : 10);
+        const Rect row{static_cast<int16_t>(layout.viewport.x + 3), y, static_cast<int16_t>(layout.viewport.w - 6), rowH};
+        renderer_.addTarget(row, b.kind, i);
+    }
+}
+
 uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect& body) {
     if (!out || maxItems == 0) return 0;
 
@@ -3600,19 +3863,32 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
 
     const uint32_t nowMs = millis();
     const bool statusVisible = statusBarVisibleNow(nowMs);
-    const int16_t statusH = statusVisible ? 12 : 0;
-
-    const int16_t mainTop = static_cast<int16_t>(body.y + 30);
-    const int16_t mainH = static_cast<int16_t>(body.h - 32);
-    const Rect sidePanel{static_cast<int16_t>(body.x + 4), mainTop, 70, mainH};
-    const Rect viewport{static_cast<int16_t>(sidePanel.x + sidePanel.w + 2), mainTop, static_cast<int16_t>(body.w - sidePanel.w - 8), mainH};
-    const Rect statusBar{viewport.x, static_cast<int16_t>(viewport.y + viewport.h - statusH), viewport.w, statusH};
-    const int16_t contentTop = static_cast<int16_t>(viewport.y + 2);
-    const int16_t contentBottom = static_cast<int16_t>(viewport.y + viewport.h - statusH);
+    const BrowserRenderLayout layout = buildBrowserRenderLayout(body, statusVisible);
+    const Rect& viewport = layout.viewport;
+    const Rect& statusBar = layout.statusBar;
+    const int16_t contentTop = layout.contentTop;
+    const int16_t contentBottom = layout.contentBottom;
 
     const bool statusVisibilityChanged = (lastStatusBarVisible_ != statusVisible);
     const uint16_t currentProgress = progressPermille();
     const uint8_t currentBlockCount = layout_.blockCount();
+
+    if (dirtyChrome_) {
+        bool committedChrome = true;
+        if (count < maxItems) {
+            out[count++] = layout.headerSection;
+        } else {
+            committedChrome = false;
+        }
+        if (count < maxItems) {
+            out[count++] = layout.sidePanel;
+        } else {
+            committedChrome = false;
+        }
+        if (committedChrome) {
+            dirtyChrome_ = false;
+        }
+    }
 
     char statusLine[40] = "";
     buildStatusLine(statusLine, sizeof(statusLine), currentProgress);
@@ -3721,7 +3997,11 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
         const int16_t visibleBottomDoc = static_cast<int16_t>(scrollY_ + visibleH);
         const int16_t growthStartDoc = currentDocHeight >= lastDocHeight_ ? static_cast<int16_t>(lastDocHeight_ > 10 ? lastDocHeight_ - 10 : 0) : 0;
 
-        const bool visibleChanged = (visibleCount != lastVisibleBlockCount_) || (lastScrollY_ != scrollY_) || statusVisibilityChanged;
+        const bool scrollChanged = (lastScrollY_ != scrollY_);
+        const bool docShrank = currentDocHeight < lastDocHeight_;
+        const bool blockCountShrank = currentBlockCount < lastBlockCount_;
+        const bool appendOnlyGrowth = dirtyContent_ && !scrollChanged && !statusVisibilityChanged && !docShrank && !blockCountShrank;
+        const bool visibleChanged = scrollChanged || statusVisibilityChanged || (!appendOnlyGrowth && visibleCount != lastVisibleBlockCount_);
         bool contentNeedsRepaint = visibleChanged;
         if (!contentNeedsRepaint && dirtyContent_) {
             const bool dirtyTouchesVisible = !(currentDocHeight < visibleTopDoc || growthStartDoc > visibleBottomDoc);
@@ -3733,7 +4013,7 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
             const Rect contentRegion{viewport.x, contentTop, viewport.w, static_cast<int16_t>(contentBottom - contentTop)};
             Rect repaint = contentRegion;
 
-            if (!visibleChanged && dirtyContent_ && currentDocHeight >= lastDocHeight_) {
+            if (appendOnlyGrowth && dirtyContent_ && currentDocHeight >= lastDocHeight_) {
                 const int16_t dirtyTopPx = static_cast<int16_t>(contentTop + growthStartDoc - scrollY_);
                 repaint = rectIntersection(contentRegion, Rect{viewport.x, dirtyTopPx, viewport.w, static_cast<int16_t>(contentBottom - dirtyTopPx)});
             }
@@ -3760,68 +4040,66 @@ uint8_t BrowserApp::consumeDirtyRegions(Rect* out, uint8_t maxItems, const Rect&
 }
 
 void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, uint32_t nowMs, const Rect* clip) {
-    const Rect headerSection{body.x, body.y, body.w, 28};
-
-    const Rect urlBar{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 2), static_cast<int16_t>(body.w - 26), 12};
-    const Rect favBtn{static_cast<int16_t>(body.x + body.w - 20), static_cast<int16_t>(body.y + 2), 16, 12};
-    const Rect backBtn{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect fwdBtn{static_cast<int16_t>(body.x + 24), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect prevBtn{static_cast<int16_t>(body.x + 44), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect nextBtn{static_cast<int16_t>(body.x + 64), static_cast<int16_t>(body.y + 16), 18, 10};
-    const Rect openBtn{static_cast<int16_t>(body.x + 86), static_cast<int16_t>(body.y + 16), 28, 10};
-    const Rect upBtn{static_cast<int16_t>(body.x + 118), static_cast<int16_t>(body.y + 16), 14, 10};
-    const Rect downBtn{static_cast<int16_t>(body.x + 134), static_cast<int16_t>(body.y + 16), 14, 10};
-
-    const int16_t mainTop = static_cast<int16_t>(body.y + 30);
-    const int16_t mainH = static_cast<int16_t>(body.h - 32);
-    const Rect sidePanel{static_cast<int16_t>(body.x + 4), mainTop, 70, mainH};
-    const Rect viewport{static_cast<int16_t>(sidePanel.x + sidePanel.w + 2), mainTop, static_cast<int16_t>(body.w - sidePanel.w - 8), mainH};
-
     const bool statusVisible = statusBarVisibleNow(nowMs);
-    const int16_t statusH = statusVisible ? 12 : 0;
-    const Rect statusBar{viewport.x, static_cast<int16_t>(viewport.y + viewport.h - statusH), viewport.w, statusH};
+    const BrowserRenderLayout layout = buildBrowserRenderLayout(body, statusVisible);
+    const bool renderHeader = !clip || rectsIntersect(layout.headerSection, *clip);
+    const bool renderSidePanel = !clip || rectsIntersect(layout.sidePanel, *clip);
+    const bool renderViewport = !clip || rectsIntersect(layout.viewport, *clip);
+    const bool renderContent = !clip || rectsIntersect(layout.contentRect, *clip);
+    const bool renderProgress = statusVisible && (!clip || rectsIntersect(layout.statusBar, *clip));
 
-    const bool renderHeader = !clip || rectsIntersect(headerSection, *clip);
-    const bool renderSidePanel = !clip || rectsIntersect(sidePanel, *clip);
-    const bool renderContent = !clip || rectsIntersect(viewport, *clip);
-    const bool renderProgress = statusVisible && (!clip || rectsIntersect(statusBar, *clip));
-    
+    if (!clip || renderSidePanel || renderContent) {
+        rebuildTargets(body, nowMs);
+    }
+
     if (!clip) {
         renderer.fillRect(body, 0xD69A);
     }
 
     if (renderHeader) {
-        renderer.fillRect(urlBar, 0xBDF7);
-        renderer.drawRect(urlBar, 0x7BEF);
-        renderer.fillRect(favBtn, isFavorite(url_) ? 0xFFE0 : 0xC618);
-        renderer.drawRect(favBtn, 0x7BEF);
-        renderer.fillRect(backBtn, 0x7BEF);
-        renderer.fillRect(fwdBtn, 0x7BEF);
-        renderer.fillRect(prevBtn, 0x5AEB);
-        renderer.fillRect(nextBtn, 0x5AEB);
-        renderer.fillRect(openBtn, 0x39E7);
-        renderer.fillRect(upBtn, 0x7BEF);
-        renderer.fillRect(downBtn, 0x7BEF);
+        const bool favorite = isFavorite(url_);
+        const bool canGoBack = historyIndex_ > 0;
+        const bool canGoForward = historyIndex_ >= 0 && historyIndex_ + 1 < static_cast<int8_t>(historyCount_);
+        const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
+        const uint16_t navBg = 0x7BEF;
+        const uint16_t disabledBg = 0xC618;
+        const uint16_t reloadBg = 0x867F;
+        const uint16_t homeBg = 0xFD20;
+        const uint16_t actionBg = loadingVisual ? 0xF800 : 0x39E7;
+        fillRectClipped(renderer, layout.urlBar, 0xBDF7, clip);
+        drawFrameClipped(renderer, layout.urlBar, 0x7BEF, clip);
 
-        renderer.drawText(backBtn.x + 5, backBtn.y + 1, "<", 0x0000, 0x7BEF);
-        renderer.drawText(fwdBtn.x + 5, fwdBtn.y + 1, ">", 0x0000, 0x7BEF);
-        renderer.drawText(prevBtn.x + 6, prevBtn.y + 1, "-", 0x0000, 0x5AEB);
-        renderer.drawText(nextBtn.x + 6, nextBtn.y + 1, "+", 0x0000, 0x5AEB);
-        renderer.drawText(openBtn.x + 3, openBtn.y + 1, "Go", 0x0000, 0x39E7);
-        renderer.drawText(upBtn.x + 4, upBtn.y + 1, "^", 0x0000, 0x7BEF);
-        renderer.drawText(downBtn.x + 4, downBtn.y + 1, "v", 0x0000, 0x7BEF);
-        renderer.drawText(favBtn.x + 4, favBtn.y + 1, "*", 0x0000, isFavorite(url_) ? 0xFFE0 : 0xC618);
+        const uint16_t favBg = favorite ? 0xFFE0 : 0xC618;
+        fillRectClipped(renderer, layout.favBtn, favBg, clip);
+        drawFrameClipped(renderer, layout.favBtn, 0x7BEF, clip);
+        fillRectClipped(renderer, layout.backBtn, canGoBack ? navBg : disabledBg, clip);
+        fillRectClipped(renderer, layout.fwdBtn, canGoForward ? navBg : disabledBg, clip);
+        fillRectClipped(renderer, layout.prevBtn, reloadBg, clip);
+        fillRectClipped(renderer, layout.nextBtn, homeBg, clip);
+        fillRectClipped(renderer, layout.openBtn, actionBg, clip);
+        fillRectClipped(renderer, layout.upBtn, navBg, clip);
+        fillRectClipped(renderer, layout.downBtn, navBg, clip);
+
+        drawTextClipped(renderer, static_cast<int16_t>(layout.backBtn.x + 5), static_cast<int16_t>(layout.backBtn.y + 1), "<", 0x0000, canGoBack ? navBg : disabledBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.fwdBtn.x + 5), static_cast<int16_t>(layout.fwdBtn.y + 1), ">", 0x0000, canGoForward ? navBg : disabledBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.prevBtn.x + 6), static_cast<int16_t>(layout.prevBtn.y + 1), "R", 0x0000, reloadBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.nextBtn.x + 6), static_cast<int16_t>(layout.nextBtn.y + 1), "H", 0x0000, homeBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.openBtn.x + (loadingVisual ? 2 : 3)), static_cast<int16_t>(layout.openBtn.y + 1), loadingVisual ? "Stop" : "Go", 0x0000,
+                        actionBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.upBtn.x + 4), static_cast<int16_t>(layout.upBtn.y + 1), "^", 0x0000, navBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.downBtn.x + 4), static_cast<int16_t>(layout.downBtn.y + 1), "v", 0x0000, navBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.favBtn.x + 4), static_cast<int16_t>(layout.favBtn.y + 1), "*", 0x0000, favBg, clip);
 
         const bool secure = startsWith(url_, "https://");
-        const Rect schemeBadge{static_cast<int16_t>(urlBar.x + 1), static_cast<int16_t>(urlBar.y + 1), 10, 10};
         const uint16_t schemeBg = secure ? 0x07E0 : 0xC618;
-        renderer.fillRect(schemeBadge, schemeBg);
-        renderer.drawText(static_cast<int16_t>(schemeBadge.x + 2), static_cast<int16_t>(schemeBadge.y + 1), secure ? "S" : "H", 0x0000, schemeBg);
+        fillRectClipped(renderer, layout.schemeBadge, schemeBg, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.schemeBadge.x + 2), static_cast<int16_t>(layout.schemeBadge.y + 1), secure ? "S" : "H", 0x0000,
+                        schemeBg, clip);
 
         char urlLine[96] = "";
         const char* displayUrl = startsWith(url_, "http://") ? (url_ + 7) : (startsWith(url_, "https://") ? (url_ + 8) : url_);
-        const int16_t textX = static_cast<int16_t>(urlBar.x + 13);
-        int16_t textW = static_cast<int16_t>(urlBar.x + urlBar.w - 2 - textX);
+        const int16_t textX = static_cast<int16_t>(layout.urlBar.x + 13);
+        int16_t textW = static_cast<int16_t>(layout.urlBar.x + layout.urlBar.w - 2 - textX);
         if (textW < 6) textW = 6;
         size_t maxChars = static_cast<size_t>(textW / 6);
         if (maxChars < 4) maxChars = 4;
@@ -3837,65 +4115,53 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
         } else {
             copyTrim(urlLine, sizeof(urlLine), displayUrl, maxChars);
         }
-        renderer.drawText(textX, static_cast<int16_t>(urlBar.y + 2), urlLine, 0x0000, 0xBDF7);
+        drawTextClipped(renderer, textX, static_cast<int16_t>(layout.urlBar.y + 2), urlLine, 0x0000, 0xBDF7, clip);
     }
 
     if (renderSidePanel) {
-        renderer.fillRect(sidePanel, 0xE75D);
-        renderer.drawRect(sidePanel, 0xA534);
-        renderer.drawText(static_cast<int16_t>(sidePanel.x + 2), static_cast<int16_t>(sidePanel.y + 2), "Fav", 0x2104, 0xE75D);
-        renderer.drawText(static_cast<int16_t>(sidePanel.x + 2), static_cast<int16_t>(sidePanel.y + 30), "Hist", 0x2104, 0xE75D);
+        fillRectClipped(renderer, layout.sidePanel, 0xE75D, clip);
+        drawFrameClipped(renderer, layout.sidePanel, 0xA534, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 2), "Fav", 0x2104, 0xE75D, clip);
+        drawTextClipped(renderer, static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 30), "Hist", 0x2104, 0xE75D, clip);
 
-        renderer_.clearTargets();
-        renderer_.addTarget(favBtn, 3, 0);
-
-        for (uint8_t i = 0; i < favoriteCount_ && i < 2; ++i) {
-            const Rect chip{static_cast<int16_t>(sidePanel.x + 2), static_cast<int16_t>(sidePanel.y + 11 + i * 9), static_cast<int16_t>(sidePanel.w - 4), 8};
-            renderer.fillRect(chip, 0xFFF4);
+        for (uint8_t i = 0; i < favoriteCount_ && i < 3; ++i) {
+            const Rect chip{static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 11 + i * 9),
+                            static_cast<int16_t>(layout.sidePanel.w - 4), 8};
+            fillRectClipped(renderer, chip, 0xFFF4, clip);
             char favLine[20] = "";
             const char* s = startsWith(favorites_[i], "http://") ? (favorites_[i] + 7) : (startsWith(favorites_[i], "https://") ? (favorites_[i] + 8) : favorites_[i]);
             copyTrim(favLine, sizeof(favLine), s, 14);
-            renderer.drawText(static_cast<int16_t>(chip.x + 1), static_cast<int16_t>(chip.y + 1), favLine, 0x001F, 0xFFF4);
-            renderer_.addTarget(chip, 4, i);
+            drawTextClipped(renderer, static_cast<int16_t>(chip.x + 1), static_cast<int16_t>(chip.y + 1), favLine, 0x001F, 0xFFF4, clip);
         }
 
-        for (uint8_t i = 0; i < historyCount_ && i < 5; ++i) {
+        for (uint8_t i = 0; i < historyCount_ && i < 6; ++i) {
             const uint8_t histIdx = static_cast<uint8_t>(historyCount_ - 1U - i);
-            const Rect chip{static_cast<int16_t>(sidePanel.x + 2), static_cast<int16_t>(sidePanel.y + 39 + i * 6), static_cast<int16_t>(sidePanel.w - 4), 5};
-            renderer.fillRect(chip, 0xD6FF);
+            const Rect chip{static_cast<int16_t>(layout.sidePanel.x + 2), static_cast<int16_t>(layout.sidePanel.y + 39 + i * 6),
+                            static_cast<int16_t>(layout.sidePanel.w - 4), 5};
+            fillRectClipped(renderer, chip, 0xD6FF, clip);
             char histLine[20] = "";
             const char* s = startsWith(history_[histIdx], "http://") ? (history_[histIdx] + 7)
                                                                       : (startsWith(history_[histIdx], "https://") ? (history_[histIdx] + 8) : history_[histIdx]);
             copyTrim(histLine, sizeof(histLine), s, 14);
-            renderer.drawText(static_cast<int16_t>(chip.x + 1), chip.y, histLine, 0x2104, 0xD6FF);
-            renderer_.addTarget(chip, 5, i);
+            drawTextClipped(renderer, static_cast<int16_t>(chip.x + 1), chip.y, histLine, 0x2104, 0xD6FF, clip);
         }
     }
 
-    if (renderContent) {
-        const int16_t contentBgBottom = static_cast<int16_t>(viewport.y + viewport.h - statusH);
-        const Rect contentBg{viewport.x, viewport.y, viewport.w, static_cast<int16_t>(contentBgBottom - viewport.y)};
-        const Rect bgPaint = clip ? rectIntersection(contentBg, *clip) : contentBg;
-        if (bgPaint.w > 0 && bgPaint.h > 0) {
-            renderer.fillRect(bgPaint, 0xFFFF);
-        }
-        if (!clip || rectsIntersect(viewport, *clip)) {
-            renderer.drawRect(viewport, 0x7BEF);
-        }
+    if (renderViewport) {
+        const Rect contentBg{layout.viewport.x, layout.viewport.y, layout.viewport.w, static_cast<int16_t>(layout.contentBottom - layout.viewport.y)};
+        fillRectClipped(renderer, contentBg, 0xFFFF, clip);
+        drawFrameClipped(renderer, layout.viewport, 0x7BEF, clip);
     }
 
     if (renderProgress) {
-        const Rect paintZone = clip ? rectIntersection(statusBar, *clip) : statusBar;
-        if (paintZone.w > 0 && paintZone.h > 0) {
-            renderer.fillRect(paintZone, 0xC618);
-        }
+        fillRectClipped(renderer, layout.statusBar, 0xC618, clip);
 
         const uint16_t pm = progressPermille();
         char statusLine[40] = "";
         buildStatusLine(statusLine, sizeof(statusLine), pm);
 
-        const Rect textBand{static_cast<int16_t>(statusBar.x + 2), static_cast<int16_t>(statusBar.y + 1), static_cast<int16_t>(statusBar.w - 4), 8};
-        const Rect textPaint = clip ? rectIntersection(textBand, *clip) : textBand;
+        const Rect textBand{static_cast<int16_t>(layout.statusBar.x + 2), static_cast<int16_t>(layout.statusBar.y + 1), static_cast<int16_t>(layout.statusBar.w - 4), 8};
+        const Rect textPaint = clipRect(textBand, clip);
         if (textPaint.w > 0 && textPaint.h > 0) {
             const int16_t charStartPx = static_cast<int16_t>(textPaint.x - textBand.x);
             int16_t firstChar = static_cast<int16_t>(charStartPx / 6);
@@ -3912,19 +4178,20 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
                     partial[wi++] = statusLine[i];
                 }
                 partial[wi] = '\0';
-                renderer.drawText(static_cast<int16_t>(textBand.x + firstChar * 6), static_cast<int16_t>(statusBar.y + 2), partial, 0x0000, 0xC618);
+                drawTextClipped(renderer, static_cast<int16_t>(textBand.x + firstChar * 6), static_cast<int16_t>(layout.statusBar.y + 2), partial, 0x0000,
+                                0xC618, clip);
             }
         }
 
-        const int16_t barW = static_cast<int16_t>(statusBar.w - 4);
+        const int16_t barW = static_cast<int16_t>(layout.statusBar.w - 4);
         int16_t fill = static_cast<int16_t>((static_cast<int32_t>(barW) * pm) / 1000);
         if (fill < 1) fill = 1;
         if (fill > barW) fill = barW;
 
         const bool loadingVisual = loading_ || externalLoading_ || externalQueueCount_ > 0;
         const int16_t glowW = 14;
-        const Rect barBand{static_cast<int16_t>(statusBar.x + 2), static_cast<int16_t>(statusBar.y + 9), barW, 2};
-        const Rect barPaint = clip ? rectIntersection(barBand, *clip) : barBand;
+        const Rect barBand{static_cast<int16_t>(layout.statusBar.x + 2), static_cast<int16_t>(layout.statusBar.y + 9), barW, 2};
+        const Rect barPaint = clipRect(barBand, clip);
         if (barPaint.w > 0 && barPaint.h > 0) {
             renderer.fillRect(barPaint, 0x7BEF);
         }
@@ -3949,20 +4216,15 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
     }
 
     if (renderContent) {
-        const int16_t contentTop = static_cast<int16_t>(viewport.y + 2);
-        const int16_t contentBottom = static_cast<int16_t>(viewport.y + viewport.h - statusH);
-        const int16_t visibleH = static_cast<int16_t>(contentBottom - contentTop);
-        const Rect contentRect{viewport.x, contentTop, viewport.w, visibleH};
-        lastViewportH_ = visibleH;
+        lastViewportH_ = layout.visibleH;
 
         const int16_t docH = layout_.docHeight();
-        const int16_t maxScroll = docH > visibleH ? static_cast<int16_t>(docH - visibleH) : 0;
+        const int16_t maxScroll = docH > layout.visibleH ? static_cast<int16_t>(docH - layout.visibleH) : 0;
         scrollY_ = clamp16(scrollY_, 0, maxScroll);
 
         if (!loaded_ && !loading_) {
-            if (!clip || rectsIntersect(contentRect, *clip)) {
-                renderer.drawText(static_cast<int16_t>(viewport.x + 6), static_cast<int16_t>(viewport.y + 20), "Open a page", 0x2104, 0xFFFF);
-            }
+            drawTextClipped(renderer, static_cast<int16_t>(layout.viewport.x + 6), static_cast<int16_t>(layout.viewport.y + 20), "Open a page", 0x2104, 0xFFFF,
+                            clip);
             return;
         }
 
@@ -3970,38 +4232,26 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
         const uint8_t n = layout_.blockCount();
         for (uint8_t i = 0; i < n; ++i) {
             const LayoutEngine::Block& b = blocks[i];
-            const int16_t y = static_cast<int16_t>(contentTop + b.y - scrollY_);
-            if (y + b.h < contentTop || y > contentBottom) continue;
+            const int16_t y = static_cast<int16_t>(layout.contentTop + b.y - scrollY_);
+            if (y + b.h < layout.contentTop || y > layout.contentBottom) continue;
 
             if (b.kind == 2) {
-                Rect ir{static_cast<int16_t>(viewport.x + 3), y, static_cast<int16_t>(b.imageW), static_cast<int16_t>(b.imageH)};
-                if (ir.w > viewport.w - 8) ir.w = static_cast<int16_t>(viewport.w - 8);
-                if (ir.h > contentBottom - ir.y) ir.h = static_cast<int16_t>(contentBottom - ir.y);
-                if (ir.w > 0 && ir.h > 0) {
-                    if (!clip || rectsIntersect(ir, *clip)) {
-                        image_.render(renderer, ir, b.src, nowMs);
-                    }
-                    renderer_.addTarget(ir, 2, i);
+                Rect ir{static_cast<int16_t>(layout.viewport.x + 3), y, static_cast<int16_t>(b.imageW), static_cast<int16_t>(b.imageH)};
+                if (ir.w > layout.viewport.w - 8) ir.w = static_cast<int16_t>(layout.viewport.w - 8);
+                if (ir.h > layout.contentBottom - ir.y) ir.h = static_cast<int16_t>(layout.contentBottom - ir.y);
+                if (ir.w > 0 && ir.h > 0 && (!clip || rectsIntersect(ir, *clip))) {
+                    image_.render(renderer, ir, b.src, nowMs);
                 }
                 continue;
             }
 
-            int16_t rowH = b.style.fontSize == FontSize::Large ? 12 : (b.style.fontSize == FontSize::Small ? 8 : 10);
-            Rect row{static_cast<int16_t>(viewport.x + 3), y, static_cast<int16_t>(viewport.w - 6), rowH};
-            if (clip && !rectsIntersect(row, *clip)) {
-                if (b.kind == 1) {
-                    renderer_.addTarget(row, 1, i);
-                } else if (b.kind == 6) {
-                    renderer_.addTarget(row, 6, i);
-                }
-                continue;
-            }
+            const int16_t rowH = b.style.fontSize == FontSize::Large ? 12 : (b.style.fontSize == FontSize::Small ? 8 : 10);
+            const Rect row{static_cast<int16_t>(layout.viewport.x + 3), y, static_cast<int16_t>(layout.viewport.w - 6), rowH};
+            const Rect rowPaint = clipRect(row, clip);
+            if (rowPaint.w <= 0 || rowPaint.h <= 0) continue;
 
-            uint16_t bg = b.kind == 1 ? 0xE71C : b.style.bg;
-            const Rect rowPaint = clip ? rectIntersection(row, *clip) : row;
-            if (rowPaint.w > 0 && rowPaint.h > 0) {
-                renderer.fillRect(rowPaint, bg);
-            }
+            const uint16_t bg = b.kind == 1 ? 0xE71C : b.style.bg;
+            renderer.fillRect(rowPaint, bg);
 
             const int16_t glyphW = b.style.fontSize == FontSize::Large ? 7 : 6;
             int16_t txtX = static_cast<int16_t>(row.x + 1);
@@ -4013,29 +4263,19 @@ void BrowserApp::render(katux::graphics::Renderer& renderer, const Rect& body, u
             }
             if (txtX < row.x + 1) txtX = static_cast<int16_t>(row.x + 1);
 
-            renderer.drawText(txtX, static_cast<int16_t>(row.y + 1), b.text, b.style.fg, bg);
-            if (b.kind == 1) {
-                renderer_.addTarget(row, 1, i);
-            } else if (b.kind == 6) {
-                renderer_.addTarget(row, 6, i);
-            }
+            drawTextClipped(renderer, txtX, static_cast<int16_t>(row.y + 1), b.text, b.style.fg, bg, clip, glyphW, static_cast<int16_t>(rowH - 1));
         }
 
         if (scrollY_ > 0) {
-            const Rect upArrow{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + 2), 8, 8};
-            if (!clip || rectsIntersect(upArrow, *clip)) {
-                renderer.fillRect(upArrow, 0xBDF7);
-                renderer.drawRect(upArrow, 0x2104);
-                renderer.drawText(static_cast<int16_t>(upArrow.x + 2), static_cast<int16_t>(upArrow.y + 1), "^", 0x0000, 0xBDF7);
-            }
+            fillRectClipped(renderer, layout.scrollUp, 0xBDF7, clip);
+            drawFrameClipped(renderer, layout.scrollUp, 0x2104, clip);
+            drawTextClipped(renderer, static_cast<int16_t>(layout.scrollUp.x + 2), static_cast<int16_t>(layout.scrollUp.y + 1), "^", 0x0000, 0xBDF7, clip);
         }
         if (scrollY_ < maxScroll) {
-            const Rect downArrow{static_cast<int16_t>(viewport.x + viewport.w - 10), static_cast<int16_t>(viewport.y + viewport.h - statusH - 10), 8, 8};
-            if (!clip || rectsIntersect(downArrow, *clip)) {
-                renderer.fillRect(downArrow, 0xBDF7);
-                renderer.drawRect(downArrow, 0x2104);
-                renderer.drawText(static_cast<int16_t>(downArrow.x + 2), static_cast<int16_t>(downArrow.y + 1), "v", 0x0000, 0xBDF7);
-            }
+            fillRectClipped(renderer, layout.scrollDown, 0xBDF7, clip);
+            drawFrameClipped(renderer, layout.scrollDown, 0x2104, clip);
+            drawTextClipped(renderer, static_cast<int16_t>(layout.scrollDown.x + 2), static_cast<int16_t>(layout.scrollDown.y + 1), "v", 0x0000, 0xBDF7,
+                            clip);
         }
     }
 }

@@ -656,6 +656,11 @@ void Desktop::renderClip(Renderer& renderer, const Rect& clip) {
 }
 
 void Desktop::renderRegion(Renderer& renderer, const Rect& clip) {
+    if (windows_.hasCapturedApp()) {
+        windows_.render(renderer, theme(), &clip);
+        return;
+    }
+
     renderWallpaper(renderer, clip);
     renderIcons(renderer, &clip);
     windows_.render(renderer, theme(), &clip);

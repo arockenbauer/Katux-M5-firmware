@@ -24,6 +24,14 @@ static constexpr uint16_t kLockUnlockAnimDurationMs = 280;
 static constexpr uint32_t kRescueHoldMs = 7000U;
 RTC_DATA_ATTR static uint8_t gBootFlags = 0;
 
+static void clearPreferenceNamespace(const char* name) {
+    if (!name || !name[0]) return;
+    Preferences prefs;
+    if (!prefs.begin(name, false)) return;
+    prefs.clear();
+    prefs.end();
+}
+
 Kernel& kernel() {
     static Kernel instance;
     return instance;
@@ -348,6 +356,11 @@ void Kernel::handleEvent(const Event& event) {
             return;
         }
 
+        if (!bios_.rescueMode() && bios_.takeRescueRebootRequest()) {
+            rebootWithLoading(kBootFlagRescue);
+            return;
+        }
+
         bool wipeStorage = false;
         if (bios_.takeFactoryResetRequest(wipeStorage)) {
             if (wipeStorage) {
@@ -392,22 +405,19 @@ void Kernel::handleEvent(const Event& event) {
 
         if (!bios_.rescueMode() && bios_.takeResetRequest()) {
             resetConfig();
-            desktopFullRedrawRequested_ = true;
+            rebootWithLoading(0);
+            return;
         }
 
         if (bios_.shouldExit()) {
-            if (bios_.rescueMode()) {
-                rebootWithLoading(0);
-                return;
+            if (!bios_.rescueMode()) {
+                config_.darkTheme = bios_.darkThemeEnabled();
+                config_.debugOverlay = bios_.debugOverlayEnabled();
+                applyConfig();
+                saveConfig();
             }
-
-            config_.darkTheme = bios_.darkThemeEnabled();
-            config_.debugOverlay = bios_.debugOverlayEnabled();
-            applyConfig();
-            saveConfig();
-            mode_ = Mode::Desktop;
-            desktopFullRedrawRequested_ = true;
-            hasCursorSnapshot_ = false;
+            rebootWithLoading(0);
+            return;
         }
         return;
     }
@@ -761,6 +771,9 @@ void Kernel::wipePersistentStorage() {
     if (prefsReady_) {
         prefs_.clear();
     }
+    clearPreferenceNamespace("katuxwifi");
+    clearPreferenceNamespace("katuxbrowser");
+    clearPreferenceNamespace("katuxdesk");
     if (fsReady_) {
         SPIFFS.format();
     }

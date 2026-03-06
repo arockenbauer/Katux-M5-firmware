@@ -378,6 +378,7 @@ class WindowManager {
     void syncFocusFlags();
     void updateHover(int16_t cursorX, int16_t cursorY);
     void markDirty(const Rect& rect);
+    void markBrowserDirty(const Window& w, bool fallbackToBody = false);
     void markDirtyWindow(const Window& before, const Window& after);
     Rect frameRect(const Window& w) const;
     void loadSavedWifi();

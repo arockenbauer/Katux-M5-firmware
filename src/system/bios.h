@@ -22,6 +22,7 @@ class Bios {
 
     bool takeResetRequest();
     bool takeRebootRequest();
+    bool takeRescueRebootRequest();
     bool takeFactoryResetRequest(bool& wipeStorage);
 
     void setRescueMode(bool enabled);
@@ -37,6 +38,7 @@ class Bios {
     bool resetRequested_ = false;
     bool rescueMode_ = false;
     bool rebootRequested_ = false;
+    bool rescueRebootRequested_ = false;
     bool factoryResetRequested_ = false;
     bool factoryResetWipeStorage_ = false;
 

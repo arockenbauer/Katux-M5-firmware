@@ -119,8 +119,7 @@ class NetworkManager {
     char* redirectLocation_ = nullptr; // allocated at runtime
     bool headerStatusParsed_ = false;
     uint32_t bytesReceived_ = 0;
-    // header parsing rarely needs more than 120 chars
-    char headerLine_[120] = "";
+    char headerLine_[256] = "";
     uint16_t headerLineLen_ = 0;
 };
 
@@ -244,9 +243,8 @@ class Renderer {
 
 class BrowserApp {
    public:
-    // keep the history/favorites buffers small; typical use rarely exceeds a few entries
-    static constexpr uint8_t kHistoryMax = 4;   // reduced from 8 to save ~2KB
-    static constexpr uint8_t kFavoriteMax = 4;  // reduced from 8 to save ~2KB
+    static constexpr uint8_t kHistoryMax = 10;
+    static constexpr uint8_t kFavoriteMax = 8;
     static constexpr size_t kUrlMaxLen = kBrowserUrlMaxLen;
 
     void begin(const char* initialUrl, const char* const* presets, uint8_t presetCount);
@@ -254,6 +252,9 @@ class BrowserApp {
     void openUrl(const char* url, bool addToHistory);
     void setCurrentUrlText(const char* url);
     void openPreset(int8_t delta);
+    void openHome();
+    void reload();
+    void stopLoading();
     void navigateHistory(int8_t step);
     void scroll(int16_t delta);
     void toggleFavorite();
@@ -299,6 +300,9 @@ class BrowserApp {
     void decodeEntities(char* text) const;
     void refreshStatusFromNet();
     bool resolveUrl(const char* baseUrl, const char* href, char* out, size_t outLen) const;
+    bool normalizeUrl(const char* url, char* out, size_t outLen) const;
+    bool toggleUrlScheme(const char* url, char* out, size_t outLen) const;
+    bool tryAlternateScheme();
     void appendHttpErrorPage(int16_t code);
     void parseStylesheet(const char* cssText);
     void parseCssRule(const char* selector, const char* declarations, bool mediaMatched);
@@ -333,6 +337,7 @@ class BrowserApp {
     bool submitControl(uint8_t controlIndex);
     bool statusBarVisibleNow(uint32_t nowMs) const;
     void buildStatusLine(char* out, size_t outLen, uint16_t pm) const;
+    void rebuildTargets(const Rect& body, uint32_t nowMs);
 
     const char* const* presets_ = nullptr;
     uint8_t presetCount_ = 0;
@@ -352,6 +357,7 @@ class BrowserApp {
 
     bool loading_ = false;
     bool loaded_ = false;
+    bool schemeFallbackTried_ = false;
     uint8_t redirectDepth_ = 0;
     uint32_t loadStartMs_ = 0;
     int16_t scrollY_ = 0;
@@ -408,6 +414,7 @@ class BrowserApp {
     char activeHref_[kUrlMaxLen] = "";
     bool openImagePending_ = false;
     char pendingImageSrc_[kUrlMaxLen] = "";
+    bool dirtyChrome_ = true;
     bool dirtyProgress_ = true;
     bool dirtyContent_ = true;
     uint16_t lastProgress_ = 0;

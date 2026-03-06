@@ -9,13 +9,14 @@ void Bios::begin() {
     exitRequested_ = false;
     resetRequested_ = false;
     rebootRequested_ = false;
+    rescueRebootRequested_ = false;
     factoryResetRequested_ = false;
     factoryResetWipeStorage_ = false;
 }
 
 void Bios::onEvent(const katux::core::Event& event) {
     if (event.type == katux::core::EventType::ButtonUp && event.source == katux::core::EventSource::ButtonB) {
-        selected_ = static_cast<uint8_t>((selected_ + 1U) % 4U);
+        selected_ = static_cast<uint8_t>((selected_ + 1U) % (rescueMode_ ? 4U : 5U));
         return;
     }
 
@@ -40,9 +41,11 @@ void Bios::onEvent(const katux::core::Event& event) {
         } else if (selected_ == 1) {
             debugOverlay_ = !debugOverlay_;
         } else if (selected_ == 2) {
-            resetRequested_ = true;
-        } else if (selected_ == 3) {
             exitRequested_ = true;
+        } else if (selected_ == 3) {
+            rescueRebootRequested_ = true;
+        } else if (selected_ == 4) {
+            resetRequested_ = true;
         }
     }
 }
@@ -68,16 +71,17 @@ void Bios::render(katux::graphics::Renderer& renderer) {
     renderer.clear(TFT_BLUE);
     renderer.drawText(8, 8, "KATUX BIOS", TFT_WHITE, TFT_BLUE);
 
-    const char* rows[4] = {"Theme", "Debug", "Reset cfg", "Exit"};
-    for (uint8_t i = 0; i < 4; ++i) {
+    const char* rows[5] = {"Theme", "Debug", "Exit BIOS", "Reboot rescue BIOS", "Reset cfg"};
+    for (uint8_t i = 0; i < 5; ++i) {
         const uint16_t bg = (i == selected_) ? TFT_WHITE : TFT_BLUE;
         const uint16_t fg = (i == selected_) ? TFT_BLUE : TFT_WHITE;
-        renderer.fillRect({12, static_cast<int16_t>(30 + i * 20), 126, 16}, bg);
-        renderer.drawText(16, static_cast<int16_t>(34 + i * 20), rows[i], fg, bg);
+        const int16_t y = static_cast<int16_t>(24 + i * 16);
+        renderer.fillRect({12, y, 196, 14}, bg);
+        renderer.drawText(16, static_cast<int16_t>(y + 3), rows[i], fg, bg);
     }
 
-    renderer.drawText(150, 34, darkTheme_ ? "Dark" : "Light", TFT_YELLOW, TFT_BLUE);
-    renderer.drawText(150, 54, debugOverlay_ ? "ON" : "OFF", TFT_YELLOW, TFT_BLUE);
+    renderer.drawText(150, 27, darkTheme_ ? "Dark" : "Light", TFT_YELLOW, TFT_BLUE);
+    renderer.drawText(150, 43, debugOverlay_ ? "ON" : "OFF", TFT_YELLOW, TFT_BLUE);
 
     char line[26] = "";
     snprintf(line, sizeof(line), "FPS:%u Q:%u", fps_, queueDepth_);
@@ -124,6 +128,12 @@ bool Bios::takeRebootRequest() {
     return pending;
 }
 
+bool Bios::takeRescueRebootRequest() {
+    const bool pending = rescueRebootRequested_;
+    rescueRebootRequested_ = false;
+    return pending;
+}
+
 bool Bios::takeFactoryResetRequest(bool& wipeStorage) {
     const bool pending = factoryResetRequested_;
     wipeStorage = factoryResetWipeStorage_;
@@ -136,6 +146,7 @@ void Bios::setRescueMode(bool enabled) {
     rescueMode_ = enabled;
     selected_ = 0;
     exitRequested_ = false;
+    rescueRebootRequested_ = false;
 }
 
 bool Bios::rescueMode() const {

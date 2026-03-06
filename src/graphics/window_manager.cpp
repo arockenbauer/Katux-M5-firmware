@@ -1140,8 +1140,6 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
             }
         }
 
-        const bool wasBrowserLoading = browserLoading_;
-        const bool wasBrowserLoaded = browserLoaded_;
         browserApp_.tick(now);
         browserLoading_ = browserApp_.isLoading();
         browserLoaded_ = browserApp_.isLoaded();
@@ -1151,15 +1149,7 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
         for (uint8_t i = 0; i < count_; ++i) {
             const Window& wb = windows_[i];
             if (!wb.visible || wb.minimized || wb.kind != WindowKind::Browser) continue;
-            const Rect body = windowBody(wb);
-            Rect dirtyRegions[6]{};
-            const uint8_t dirtyCount = browserApp_.consumeDirtyRegions(dirtyRegions, 6, body);
-            for (uint8_t d = 0; d < dirtyCount; ++d) {
-                markDirty(dirtyRegions[d]);
-            }
-            if ((wasBrowserLoading != browserLoading_ || wasBrowserLoaded != browserLoaded_) && dirtyCount == 0) {
-                markDirty(body);
-            }
+            markBrowserDirty(wb, false);
         }
 
         if (focusedZ_ >= 0) {
@@ -2247,7 +2237,7 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                         strlcpy(imageViewerSrcByWindow_[iw.id], requestedImage, sizeof(imageViewerSrcByWindow_[iw.id]));
                     }
                 }
-                markDirty(windowBody(w));
+                markBrowserDirty(w, true);
             }
         }
 
@@ -2284,11 +2274,20 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
         }
 
         const bool hovered = (hoverZ_ == static_cast<int8_t>(z));
+        const bool fullscreenGame = w.fullscreen && isGameKind(w.kind);
         const Rect shadow{static_cast<int16_t>(w.x + 2), static_cast<int16_t>(w.y + 2), w.width, w.height};
-        renderer.fillRect(shadow, hovered ? 0x3186 : 0x18A3);
+        if (!fullscreenGame) {
+            Rect shadowPaint = shadow;
+            if (!clip || clipRectTo(shadow, *clip, shadowPaint)) {
+                renderer.fillRect(shadowPaint, hovered ? 0x3186 : 0x18A3);
+            }
 
-        renderer.fillRect(wr, t.windowBg);
-        renderer.drawRect(wr, hovered ? 0xFFFF : t.windowBorder);
+            Rect framePaint = wr;
+            if (!clip || clipRectTo(wr, *clip, framePaint)) {
+                renderer.fillRect(framePaint, t.windowBg);
+                renderer.drawRect(wr, hovered ? 0xFFFF : t.windowBorder);
+            }
+        }
 
         if (!w.fullscreen) {
             const uint16_t titleColor = w.focused ? t.titleActive : (hovered ? 0x5AEB : t.titleInactive);
@@ -2425,7 +2424,7 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
         }
     }
 
-    if (notificationCount_ > 0 && notificationSlideY_ > -16) {
+    if (!hasCapturedApp() && notificationCount_ > 0 && notificationSlideY_ > -16) {
         const char* notifText = notifications_[notificationCount_ - 1];
         const Rect top = notificationRectFor(notifText, notificationSlideY_);
         if (!clip || intersects(*clip, top)) {
@@ -2634,6 +2633,18 @@ void WindowManager::markDirty(const Rect& rect) {
     }
 
     dirty_[dirtyCount_++] = c;
+}
+
+void WindowManager::markBrowserDirty(const Window& w, bool fallbackToBody) {
+    const Rect body = windowBody(w);
+    Rect dirtyRegions[6]{};
+    const uint8_t dirtyCount = browserApp_.consumeDirtyRegions(dirtyRegions, 6, body);
+    for (uint8_t i = 0; i < dirtyCount; ++i) {
+        markDirty(dirtyRegions[i]);
+    }
+    if (dirtyCount == 0 && fallbackToBody) {
+        markDirty(body);
+    }
 }
 
 void WindowManager::markDirtyWindow(const Window& before, const Window& after) {
