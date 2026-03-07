@@ -39,6 +39,7 @@ void Desktop::begin(katux::core::EventManager* events, bool safeMode) {
     apps_[appCount_++] = {"Files", WindowKind::Explorer, {88, 20, 24, 20}, {88, 44, 40, 11}, 3};
     apps_[appCount_++] = {"Notes", WindowKind::Notepad, {128, 20, 24, 20}, {126, 44, 42, 11}, 7};
     apps_[appCount_++] = {"WiFi", WindowKind::WifiManager, {8, 62, 24, 20}, {8, 86, 32, 11}, 5};
+    apps_[appCount_++] = {"R-Browser", WindowKind::RBrowser, {128, 62, 24, 20}, {120, 86, 60, 11}, 12};
     apps_[appCount_++] = {"Tasks", WindowKind::TaskManager, {48, 62, 24, 20}, {48, 86, 40, 11}, 2};
     apps_[appCount_++] = {"Browser", WindowKind::Browser, {88, 62, 24, 20}, {86, 86, 48, 11}, 4};
     apps_[appCount_++] = {"DateTime", WindowKind::DateTime, {128, 62, 24, 20}, {124, 86, 58, 11}, 11};
@@ -517,6 +518,8 @@ bool Desktop::openWindowForApp(uint8_t appIndex) {
         winId = windows_.createWindow("WiFi Manager", 12, 6, 216, 124, true, kind);
     } else if (kind == WindowKind::Browser) {
         winId = windows_.createWindow("Navigator", 10, 6, 220, 124, true, kind);
+    } else if (kind == WindowKind::RBrowser) {
+        winId = windows_.createWindow("R-Browser", 10, 6, 220, 124, true, kind);
     } else if (kind == WindowKind::DateTime) {
         winId = windows_.createWindow("Date and Time", 14, 8, 212, 122, true, kind);
     } else if (kind == WindowKind::Reboot) {
@@ -783,6 +786,10 @@ void Desktop::renderTaskbar(Renderer& renderer, const Rect* clip) {
         } else if (items[i].kind == WindowKind::Browser) {
             renderer.drawRect({ix, iy, 6, 6}, 0x0000);
             renderer.fillRect({static_cast<int16_t>(ix + 2), static_cast<int16_t>(iy + 2), 2, 2}, 0x0000);
+        } else if (items[i].kind == WindowKind::RBrowser) {
+            renderer.drawRect({ix, iy, 6, 6}, 0x0000);
+            renderer.fillRect({static_cast<int16_t>(ix + 1), static_cast<int16_t>(iy + 1), 4, 4}, 0x0000);
+            renderer.fillRect({static_cast<int16_t>(ix + 4), iy, 2, 2}, 0xFFFF);
         } else if (items[i].kind == WindowKind::WifiManager) {
             renderer.fillRect({ix, static_cast<int16_t>(iy + 5), 6, 1}, 0x0000);
             renderer.fillRect({static_cast<int16_t>(ix + 1), static_cast<int16_t>(iy + 3), 4, 1}, 0x0000);
@@ -966,6 +973,10 @@ void Desktop::renderContextMenu(Renderer& renderer, const Rect* clip) {
 
 CursorStyle Desktop::cursorStyle() const {
     return windows_.cursorStyle();
+}
+
+bool Desktop::needsFrameTick() const {
+    return windows_.needsFrameTick();
 }
 
 void Desktop::invalidateAll() {

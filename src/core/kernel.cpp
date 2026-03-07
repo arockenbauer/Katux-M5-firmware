@@ -38,6 +38,7 @@ Kernel& kernel() {
 }
 
 bool Kernel::begin() {
+    Serial.begin(115200);
     auto cfg = M5.config();
     cfg.fallback_board = m5::board_t::board_M5StickCPlus2;
     StickCP2.begin(cfg);
@@ -168,6 +169,10 @@ void Kernel::update() {
         desktop_.setRuntimeStats(fps_, esp_get_free_heap_size(), now, events_.size());
         trySyncTime(now);
 
+        if (mode_ == Mode::Desktop && desktop_.needsFrameTick()) {
+            power_.touch();
+        }
+
         dispatchEvents();
         render();
     }
@@ -175,11 +180,10 @@ void Kernel::update() {
     power_.update(now);
 
     if (power_.consumeWakeRequest()) {
-        mode_ = Mode::Lock;
         lockUnlockAnimating_ = false;
         lockAnimDesktopReady_ = false;
         lastLockAnimOffset_ = 0;
-        lockWakeGuardUntilMs_ = now + 450U;
+        lockWakeGuardUntilMs_ = 0;
         lockUnlockAnimStartMs_ = 0;
         lastLockSecond_ = 255;
         lastLockFallbackRedrawMs_ = 0;

@@ -15,6 +15,7 @@ class Desktop {
     bool render(Renderer& renderer, bool fullRedraw, int16_t cursorX, int16_t cursorY);
     void renderClip(Renderer& renderer, const Rect& clip);
     CursorStyle cursorStyle() const;
+    bool needsFrameTick() const;
     void invalidateAll();
     void setSystemState(bool darkTheme, uint8_t brightness, uint8_t cursorSpeed, uint8_t performanceProfile, bool debugOverlay, bool animationsEnabled,
                         bool autoTime, int8_t timezoneOffset, uint16_t manualYear, uint8_t manualMonth, uint8_t manualDay, uint8_t manualHour,
@@ -49,7 +50,7 @@ class Desktop {
     int16_t lastCursorX_ = 0;
     int16_t lastCursorY_ = 0;
 
-    static constexpr uint8_t kMaxApps = 15;
+    static constexpr uint8_t kMaxApps = 16;
     static constexpr uint8_t kDesktopSlotCount = 6;
     AppEntry apps_[kMaxApps]{};
     uint8_t appCount_ = 0;

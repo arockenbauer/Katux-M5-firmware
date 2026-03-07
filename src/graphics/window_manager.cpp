@@ -50,6 +50,7 @@ static const HubEntry kHubEntries[] = {
     {"Task Mgr", WindowKind::TaskManager, 2},
     {"WiFi", WindowKind::WifiManager, 5},
     {"Browser", WindowKind::Browser, 4},
+    {"R-Browser", WindowKind::RBrowser, 12},
     {"Date&Time", WindowKind::DateTime, 11},
     {"Desktop", WindowKind::DesktopConfig, 1},
     {"Alerts", WindowKind::Notifications, 0},
@@ -229,6 +230,7 @@ static const WindowKind kDesktopAssignableKinds[] = {
     WindowKind::WifiManager,
     WindowKind::TaskManager,
     WindowKind::Browser,
+    WindowKind::RBrowser,
     WindowKind::ImageVisualizer,
     WindowKind::DateTime,
     WindowKind::DesktopConfig,
@@ -265,6 +267,7 @@ static const char* desktopKindLabel(WindowKind kind) {
     if (kind == WindowKind::WifiManager) return "WiFi";
     if (kind == WindowKind::TaskManager) return "Tasks";
     if (kind == WindowKind::Browser) return "Browser";
+    if (kind == WindowKind::RBrowser) return "R-Browser";
     if (kind == WindowKind::ImageVisualizer) return "Image viewer";
     if (kind == WindowKind::DateTime) return "Date & Time";
     if (kind == WindowKind::DesktopConfig) return "Desktop";
@@ -285,7 +288,7 @@ static void configureWindowLimits(Window& win) {
     win.resizable = true;
     win.fullscreen = false;
 
-    if (win.kind == WindowKind::Browser) {
+    if (win.kind == WindowKind::Browser || win.kind == WindowKind::RBrowser) {
         win.minWidth = 180;
         win.minHeight = 96;
         win.maxWidth = 240;
@@ -443,6 +446,7 @@ void WindowManager::begin(katux::core::EventManager* events) {
     browserScrollY_ = 0;
     browserKeyboardOpen_ = false;
     browserKeyboardEditingForm_ = false;
+    rBrowserKeyboardOpen_ = false;
     for (uint8_t i = 0; i < kMaxWindows; ++i) {
         imageViewerSrcByWindow_[i][0] = '\0';
     }
@@ -486,6 +490,7 @@ void WindowManager::begin(katux::core::EventManager* events) {
     }
 
     browserApp_.begin(browserUrl_, kBrowserPresets, kBrowserPresetCount);
+    rBrowserApp_.begin();
 
     invalidateAll();
 }
@@ -681,9 +686,13 @@ bool WindowManager::closeWindowById(uint8_t id) {
             browserKeyboardOpen_ = false;
             browserKeyboardEditingForm_ = false;
         }
+        if (w.kind == WindowKind::RBrowser) {
+            rBrowserKeyboardOpen_ = false;
+            rBrowserApp_.disconnect();
+        }
         if (w.kind == WindowKind::AppHub) appHubSearchKeyboardOpen_ = false;
         if (w.kind == WindowKind::ImageVisualizer) imageViewerSrcByWindow_[w.id][0] = '\0';
-        if (!wifiKeyboardOpen_ && !notepadKeyboardOpen_ && !browserKeyboardOpen_ && !explorerKeyboardOpen_ && !appHubSearchKeyboardOpen_ &&
+        if (!wifiKeyboardOpen_ && !notepadKeyboardOpen_ && !browserKeyboardOpen_ && !rBrowserKeyboardOpen_ && !explorerKeyboardOpen_ && !appHubSearchKeyboardOpen_ &&
             keyboard_.isOpen()) {
             keyboard_.close();
         }
@@ -1148,8 +1157,17 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
 
         for (uint8_t i = 0; i < count_; ++i) {
             const Window& wb = windows_[i];
-            if (!wb.visible || wb.minimized || wb.kind != WindowKind::Browser) continue;
-            markBrowserDirty(wb, false);
+            if (!wb.visible || wb.minimized) continue;
+            if (wb.kind == WindowKind::Browser) {
+                markBrowserDirty(wb, false);
+                continue;
+            }
+            if (wb.kind == WindowKind::RBrowser) {
+                const bool focused = focusedZ_ >= 0 && zOrder_[focusedZ_] == i;
+                const Rect rbBody = windowBody(wb);
+                rBrowserApp_.tick(now, rbBody, cursorX_, cursorY_, focused && !rBrowserKeyboardOpen_);
+                markRBrowserDirty(wb, false);
+            }
         }
 
         if (focusedZ_ >= 0) {
@@ -1278,6 +1296,9 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                 notepadKeyboardOpen_ = false;
                 explorerKeyboardOpen_ = false;
                 explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                browserKeyboardOpen_ = false;
+                browserKeyboardEditingForm_ = false;
+                rBrowserKeyboardOpen_ = false;
                 appHubSearchKeyboardOpen_ = false;
             }
             draggingZ_ = -1;
@@ -2222,6 +2243,7 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     keyboard_.open(formInitial, false);
                     browserKeyboardOpen_ = true;
                     browserKeyboardEditingForm_ = true;
+                    rBrowserKeyboardOpen_ = false;
                     wifiKeyboardOpen_ = false;
                     notepadKeyboardOpen_ = false;
                     explorerKeyboardOpen_ = false;
@@ -2238,6 +2260,35 @@ void WindowManager::onEvent(const katux::core::Event& event, int16_t cursorX, in
                     }
                 }
                 markBrowserDirty(w, true);
+            }
+        } else if (w.kind == WindowKind::RBrowser) {
+            const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+            if (rBrowserKeyboardOpen_ && keyboard_.onClick(cursorX, cursorY, keyRect)) {
+                if (keyboard_.consumeAccepted()) {
+                    rBrowserApp_.applyKeyboardValue(keyboard_.value(), true);
+                    rBrowserKeyboardOpen_ = false;
+                } else if (!keyboard_.isOpen()) {
+                    rBrowserApp_.applyKeyboardValue(keyboard_.value(), false);
+                    rBrowserKeyboardOpen_ = false;
+                }
+                markRBrowserDirty(w, true);
+                updateHover(cursorX, cursorY);
+                return;
+            }
+
+            if (rBrowserApp_.handleClick(cursorX, cursorY, body)) {
+                char keyboardInitial[256] = "";
+                if (rBrowserApp_.consumeKeyboardRequest(keyboardInitial, sizeof(keyboardInitial))) {
+                    keyboard_.open(keyboardInitial, false);
+                    rBrowserKeyboardOpen_ = true;
+                    browserKeyboardOpen_ = false;
+                    browserKeyboardEditingForm_ = false;
+                    wifiKeyboardOpen_ = false;
+                    notepadKeyboardOpen_ = false;
+                    explorerKeyboardOpen_ = false;
+                    explorerKeyboardMode_ = ExplorerKeyboardMode::None;
+                }
+                markRBrowserDirty(w, true);
             }
         }
 
@@ -2340,6 +2391,10 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
             } else if (w.kind == WindowKind::Browser) {
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 2), static_cast<int16_t>(iconBox.y + 2), 4, 4}, 0x39E7);
+            } else if (w.kind == WindowKind::RBrowser) {
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 2), static_cast<int16_t>(iconBox.y + 2), 4, 4}, 0x0000);
+                renderer.fillRect({static_cast<int16_t>(iconBox.x + 5), static_cast<int16_t>(iconBox.y + 1), 2, 2}, 0xFFE0);
             } else if (w.kind == WindowKind::ImageVisualizer) {
                 renderer.fillRect({static_cast<int16_t>(iconBox.x + 1), static_cast<int16_t>(iconBox.y + 1), 6, 6}, 0xFFFF);
                 renderer.drawRect({static_cast<int16_t>(iconBox.x + 2), static_cast<int16_t>(iconBox.y + 2), 4, 4}, 0x001F);
@@ -2413,6 +2468,8 @@ void WindowManager::render(Renderer& renderer, const Theme& t, const Rect* clip)
             renderWifiManager(renderer, t, w, clip);
         } else if (w.kind == WindowKind::Browser) {
             renderBrowser(renderer, t, w, clip);
+        } else if (w.kind == WindowKind::RBrowser) {
+            renderRBrowser(renderer, t, w, clip);
         } else if (w.kind == WindowKind::ImageVisualizer) {
             renderImageVisualizer(renderer, t, w, clip);
         } else if (w.kind == WindowKind::DateTime) {
@@ -2538,7 +2595,7 @@ CursorStyle WindowManager::cursorStyle() const {
     if (hoverInput_) {
         return CursorStyle::Input;
     }
-    if (wifiConnecting_ || browserLoading_) {
+    if (wifiConnecting_ || browserLoading_ || rBrowserApp_.isBusy()) {
         return CursorStyle::Busy;
     }
     if (hoverControl_ != 0 || hoverZ_ >= 0) {
@@ -2554,7 +2611,7 @@ bool WindowManager::hasCapturedApp() const {
 }
 
 bool WindowManager::needsFrameTick() const {
-    if (wifiConnecting_ || browserLoading_) return true;
+    if (wifiConnecting_ || browserLoading_ || rBrowserApp_.needsFrameTick()) return true;
     if (notificationCount_ > 0 && notificationSlideY_ > -16) return true;
     if (hasCapturedApp()) return true;
 
@@ -2639,6 +2696,18 @@ void WindowManager::markBrowserDirty(const Window& w, bool fallbackToBody) {
     const Rect body = windowBody(w);
     Rect dirtyRegions[6]{};
     const uint8_t dirtyCount = browserApp_.consumeDirtyRegions(dirtyRegions, 6, body);
+    for (uint8_t i = 0; i < dirtyCount; ++i) {
+        markDirty(dirtyRegions[i]);
+    }
+    if (dirtyCount == 0 && fallbackToBody) {
+        markDirty(body);
+    }
+}
+
+void WindowManager::markRBrowserDirty(const Window& w, bool fallbackToBody) {
+    const Rect body = windowBody(w);
+    Rect dirtyRegions[8]{};
+    const uint8_t dirtyCount = rBrowserApp_.consumeDirtyRegions(dirtyRegions, 8, body);
     for (uint8_t i = 0; i < dirtyCount; ++i) {
         markDirty(dirtyRegions[i]);
     }
@@ -4639,6 +4708,18 @@ void WindowManager::renderBrowser(Renderer& renderer, const Theme& t, const Wind
     }
 }
 
+void WindowManager::renderRBrowser(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
+    (void)t;
+    const Rect body = windowBody(w);
+    if (clip && !intersects(*clip, body)) return;
+
+    rBrowserApp_.render(renderer, body, millis(), clip);
+    if (rBrowserKeyboardOpen_ && keyboard_.isOpen()) {
+        const Rect keyRect{static_cast<int16_t>(body.x + 6), static_cast<int16_t>(body.y + body.h - 62), static_cast<int16_t>(body.w - 12), 60};
+        keyboard_.render(renderer, keyRect, darkTheme_, cursorX_, cursorY_);
+    }
+}
+
 void WindowManager::renderImageVisualizer(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip) {
     (void)t;
     const Rect body = windowBody(w);
@@ -5356,6 +5437,7 @@ int8_t WindowManager::createKindWindow(WindowKind kind) {
     if (kind == WindowKind::Notifications) return createWindow("Notifications", 24, 10, 192, 114, true, kind);
     if (kind == WindowKind::WifiManager) return createWindow("WiFi Manager", 12, 6, 216, 124, true, kind);
     if (kind == WindowKind::Browser) return createWindow("Navigator", 10, 6, 220, 124, true, kind);
+    if (kind == WindowKind::RBrowser) return createWindow("R-Browser", 10, 6, 220, 124, true, kind);
     if (kind == WindowKind::ImageVisualizer) return createWindow("Image visualizer", 14, 8, 212, 122, true, kind);
     if (kind == WindowKind::DateTime) return createWindow("Date and Time", 14, 8, 212, 122, true, kind);
     if (kind == WindowKind::DesktopConfig) return createWindow("Desktop", 14, 8, 212, 122, true, kind);
@@ -5582,6 +5664,36 @@ void WindowManager::updateHover(int16_t cursorX, int16_t cursorY) {
                 hoverInput_ = true;
                 return;
             }
+        }
+    } else if (w.kind == WindowKind::RBrowser) {
+        const Rect body = windowBody(w);
+        const Rect urlBar{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 2), static_cast<int16_t>(body.w - 26), 12};
+        const Rect favBtn{static_cast<int16_t>(body.x + body.w - 20), static_cast<int16_t>(body.y + 2), 16, 12};
+        const Rect backBtn{static_cast<int16_t>(body.x + 4), static_cast<int16_t>(body.y + 16), 18, 10};
+        const Rect fwdBtn{static_cast<int16_t>(body.x + 24), static_cast<int16_t>(body.y + 16), 18, 10};
+        const Rect prevBtn{static_cast<int16_t>(body.x + 44), static_cast<int16_t>(body.y + 16), 18, 10};
+        const Rect nextBtn{static_cast<int16_t>(body.x + 64), static_cast<int16_t>(body.y + 16), 18, 10};
+        const Rect openBtn{static_cast<int16_t>(body.x + 86), static_cast<int16_t>(body.y + 16), 28, 10};
+        const Rect upBtn{static_cast<int16_t>(body.x + 118), static_cast<int16_t>(body.y + 16), 14, 10};
+        const Rect downBtn{static_cast<int16_t>(body.x + 134), static_cast<int16_t>(body.y + 16), 14, 10};
+        const int16_t mainTop = static_cast<int16_t>(body.y + 30);
+        const int16_t mainH = static_cast<int16_t>(body.h - 32);
+        const Rect sidePanel{static_cast<int16_t>(body.x + 4), mainTop, 70, mainH};
+        const Rect viewport{static_cast<int16_t>(sidePanel.x + sidePanel.w + 2), mainTop, static_cast<int16_t>(body.w - sidePanel.w - 8), mainH};
+        if ((cursorX >= urlBar.x && cursorY >= urlBar.y && cursorX < urlBar.x + urlBar.w && cursorY < urlBar.y + urlBar.h) ||
+            (cursorX >= favBtn.x && cursorY >= favBtn.y && cursorX < favBtn.x + favBtn.w && cursorY < favBtn.y + favBtn.h) ||
+            (cursorX >= backBtn.x && cursorY >= backBtn.y && cursorX < backBtn.x + backBtn.w && cursorY < backBtn.y + backBtn.h) ||
+            (cursorX >= fwdBtn.x && cursorY >= fwdBtn.y && cursorX < fwdBtn.x + fwdBtn.w && cursorY < fwdBtn.y + fwdBtn.h) ||
+            (cursorX >= prevBtn.x && cursorY >= prevBtn.y && cursorX < prevBtn.x + prevBtn.w && cursorY < prevBtn.y + prevBtn.h) ||
+            (cursorX >= nextBtn.x && cursorY >= nextBtn.y && cursorX < nextBtn.x + nextBtn.w && cursorY < nextBtn.y + nextBtn.h) ||
+            (cursorX >= openBtn.x && cursorY >= openBtn.y && cursorX < openBtn.x + openBtn.w && cursorY < openBtn.y + openBtn.h) ||
+            (cursorX >= upBtn.x && cursorY >= upBtn.y && cursorX < upBtn.x + upBtn.w && cursorY < upBtn.y + upBtn.h) ||
+            (cursorX >= downBtn.x && cursorY >= downBtn.y && cursorX < downBtn.x + downBtn.w && cursorY < downBtn.y + downBtn.h) ||
+            (cursorX >= sidePanel.x && cursorY >= sidePanel.y && cursorX < sidePanel.x + sidePanel.w && cursorY < sidePanel.y + sidePanel.h) ||
+            (cursorX >= viewport.x && cursorY >= viewport.y && cursorX < viewport.x + viewport.w && cursorY < viewport.y + viewport.h) ||
+            (rBrowserKeyboardOpen_ && keyboard_.isOpen() && cursorY >= body.y + body.h - 62)) {
+            hoverInput_ = true;
+            return;
         }
     }
 }

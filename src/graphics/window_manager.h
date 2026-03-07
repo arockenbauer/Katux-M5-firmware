@@ -7,6 +7,7 @@
 #include "renderer.h"
 #include "theme.h"
 #include "browser_app.h"
+#include "rbrowser_app.h"
 #include "../core/event_manager.h"
 #include "../system/soft_keyboard.h"
 
@@ -25,6 +26,7 @@ enum class WindowKind : uint8_t {
     Notifications,
     WifiManager,
     Browser,
+    RBrowser,
     ImageVisualizer,
     DateTime,
     DesktopConfig,
@@ -316,11 +318,13 @@ class WindowManager {
     bool browserPrefsReady_ = false;
     bool browserKeyboardOpen_ = false;
     bool browserKeyboardEditingForm_ = false;
+    bool rBrowserKeyboardOpen_ = false;
     int8_t browserHoldScrollDir_ = 0;
     uint32_t browserHoldScrollNextMs_ = 0;
     uint32_t browserHoldScrollStartMs_ = 0;
     char imageViewerSrcByWindow_[kMaxWindows][64]{};
     katux::graphics::browser::BrowserApp browserApp_{};
+    katux::graphics::rbrowser::RemoteBrowserApp rBrowserApp_{};
 
     katux::system::SoftKeyboard keyboard_;
     Preferences prefs_;
@@ -339,6 +343,7 @@ class WindowManager {
     void renderNotifications(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderWifiManager(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderBrowser(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
+    void renderRBrowser(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderImageVisualizer(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderDateTime(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
     void renderDesktopConfig(Renderer& renderer, const Theme& t, const Window& w, const Rect* clip);
@@ -379,6 +384,7 @@ class WindowManager {
     void updateHover(int16_t cursorX, int16_t cursorY);
     void markDirty(const Rect& rect);
     void markBrowserDirty(const Window& w, bool fallbackToBody = false);
+    void markRBrowserDirty(const Window& w, bool fallbackToBody = false);
     void markDirtyWindow(const Window& before, const Window& after);
     Rect frameRect(const Window& w) const;
     void loadSavedWifi();
